@@ -1,12 +1,24 @@
+import os
 import pandas as pd
+from pathlib import Path
 
-FEATURES_PATH = "features/"
+THIS_FILE = Path(__file__).resolve()
+
+# project root = parent folder of mri_breast_duke and mama_mia
+PROJECT_ROOT = THIS_FILE.parents[1]
+
+FOLDER_PATH = "mri_breast_duke"
+FEATURES_PATH = "features"
 IMAGES_METADATA = "Duke-Breast-Cancer-MRI_v2_20220609-nbia-digest.xlsx"
 TARGETS_FILE_NAME = "Clinical_and_Other_Features.xlsx"
 
 
+def base_path(target_path):
+    return os.path.join(PROJECT_ROOT,  FOLDER_PATH, FEATURES_PATH, target_path)
+
+
 def read_patient_id_for_oncotype_score_not_na():
-    features_file = FEATURES_PATH + TARGETS_FILE_NAME
+    features_file = base_path(TARGETS_FILE_NAME)
     data = pd.read_excel(features_file, sheet_name="Data", header=[0, 1])
 
     data.columns = [
@@ -41,7 +53,7 @@ def read_patient_id_for_oncotype_score_not_na():
 
 
 def read_study_instance_for_patient_ids(patient_ids):
-    images_metadata_file = FEATURES_PATH + IMAGES_METADATA
+    images_metadata_file = base_path(IMAGES_METADATA)
     data = pd.read_excel(images_metadata_file, sheet_name="Metadata", header=0)
 
     data.rename(columns={"Patient ID": "patientId",

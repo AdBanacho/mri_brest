@@ -13,6 +13,51 @@ from readFromXlmx import get_oncotype_score_for_series_as_serie_and_label_df
 
 NIFTI_PATH = "images/tciaNifti"
 
+
+def pad_collate(batch):
+    """
+    batch: list of (vol, label)
+      vol: (1, D, H, W)
+    Returns:
+      vols: (B, 1, Dmax, Hmax, Wmax)
+      labels: (B,)
+    """
+    vols, labels = zip(*batch)  # list of tensors, list of tensors
+
+    # Ensure shape is (1, D, H, W)
+    fixed_vols = []
+    for v in vols:
+        v = v.float()
+        if v.ndim == 3:
+            v = v.unsqueeze(0)          # (D, H, W) -> (1, D, H, W)
+        assert v.ndim == 4, f"Expected 4D tensor, got {v.shape}"
+        assert v.shape[0] == 1, f"Expected 1 channel, got {v.shape}"
+        fixed_vols.append(v)
+
+    # Compute max spatial dims in this batch
+    max_d = max(v.shape[1] for v in fixed_vols)
+    max_h = max(v.shape[2] for v in fixed_vols)
+    max_w = max(v.shape[3] for v in fixed_vols)
+
+    padded_vols = []
+    for v in fixed_vols:
+        _, d, h, w = v.shape
+        pad_d = max_d - d
+        pad_h = max_h - h
+        pad_w = max_w - w
+
+        # F.pad: (w_left, w_right, h_left, h_right, d_left, d_right)
+        padding = (0, pad_w, 0, pad_h, 0, pad_d)
+        v_padded = F.pad(v, padding, mode="constant", value=0.0)
+        padded_vols.append(v_padded)
+
+    # Stack along batch dimension → (B, 1, Dmax, Hmax, Wmax)
+    vols_tensor = torch.stack(padded_vols, dim=0)
+
+    labels_tensor = torch.stack(labels, dim=0)  # (B,)
+    return vols_tensor, labels_tensor
+
+
 class NiftiDataset(Dataset):
     def __init__(self, df, image_root=NIFTI_PATH, target_col="label", serie_col="serie"):
         self.df = df.reset_index(drop=True)
@@ -26,9 +71,9 @@ class NiftiDataset(Dataset):
     def _load_nifti(self, serie):
         path = os.path.join(self.image_root, f"{serie}.nii.gz")
         img = nib.load(path)
-        vol = img.get_fdata()
+        vol = img.get_fdata().astype(np.float32)
 
-        vol = np.asarray(vol, dtype=np.float32)
+        vol = np.squeeze(vol)
 
         mean = vol.mean()
         std = vol.std() + 1e-5
@@ -57,7 +102,14 @@ class NiftiDataset(Dataset):
         return vol, label
 
 
-class Simple3DNet(nn.Module):
+class Simple3DFCN(nn.Module):
+    """
+    Fully convolutional 3D network:
+    - Conv3d + MaxPool3d blocks
+    - 1x1x1 Conv3d to get num_classes channels
+    - AdaptiveAvgPool3d(1) to aggregate over D,H,W
+    No Linear layers.
+    """
     def __init__(self, num_classes=4):
         super().__init__()
         self.conv1 = nn.Conv3d(1, 8, kernel_size=3, padding=1)
@@ -65,23 +117,33 @@ class Simple3DNet(nn.Module):
         self.conv3 = nn.Conv3d(16, 32, kernel_size=3, padding=1)
         self.pool = nn.MaxPool3d(2)
 
-        self.fc1 = nn.Linear(32 * 8 * 8 * 8, 64)
-        self.fc2 = nn.Linear(64, num_classes)
+        # 1x1x1 conv to map 32 feature channels -> num_classes
+        self.classifier_conv = nn.Conv3d(32, num_classes, kernel_size=1)
+
+        # Global adaptive average pooling to get (B, C, 1, 1, 1)
+        self.global_pool = nn.AdaptiveAvgPool3d(1)
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
+        # Feature extractor
+        x = self.pool(F.relu(self.conv1(x)))  # (B, 8, D/2, H/2, W/2)
+        x = self.pool(F.relu(self.conv2(x)))  # (B, 16, D/4, H/4, W/4)
+        x = self.pool(F.relu(self.conv3(x)))  # (B, 32, D/8, H/8, W/8)
+
+        # Class logits per spatial location
+        x = self.classifier_conv(x)           # (B, num_classes, D/8, H/8, W/8)
+
+        # Global average pooling over D,H,W -> (B, num_classes, 1, 1, 1)
+        x = self.global_pool(x)
+
+        # Flatten to (B, num_classes)
         x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
         return x
 
 
 class NiftiClassifier(pl.LightningModule):
     def __init__(self, lr=1e-3, num_classes=4):
         super().__init__()
-        self.model = Simple3DNet(num_classes=num_classes)
+        self.model = Simple3DFCN(num_classes=num_classes)
         self.loss_fn = nn.CrossEntropyLoss()
         self.lr = lr
 
@@ -140,6 +202,7 @@ class NiftiDataModule(pl.LightningDataModule):
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
+            collate_fn=pad_collate
         )
 
     def val_dataloader(self):
@@ -149,6 +212,7 @@ class NiftiDataModule(pl.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
+            collate_fn=pad_collate
         )
 
 
@@ -158,7 +222,7 @@ def main():
     data_module = NiftiDataModule(
         df,
         image_root=NIFTI_PATH,
-        batch_size=2,
+        batch_size=1,
         num_workers=4,
     )
 
@@ -169,8 +233,12 @@ def main():
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
     )
-
     trainer.fit(model, datamodule=data_module)
+
+    print("\n=== Final Validation Metrics ===")
+    metrics = trainer.callback_metrics
+    for k, v in metrics.items():
+        print(f"{k}: {float(v):.4f}")
 
 
 if __name__ == "__main__":
