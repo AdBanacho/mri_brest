@@ -72,9 +72,18 @@ def get_oncotype_score_for_series():
     patient_ids = read_patient_id_for_oncotype_score_not_na()
     return read_study_instance_for_patient_ids(patient_ids)
 
-def get_oncotype_score_for_series_as_serie_and_label_df():
+
+def get_oncotype_score_for_series_as_serie_and_label_df(num_of_samples=None, max_per_class=None, seed=None):
     data = get_oncotype_score_for_series()
-    return pd.DataFrame({
+    df = pd.DataFrame({
         "serie": data.seriesId,
         "label": data.oncotypeCategory
     })
+    if num_of_samples is not None:
+        df = df.groupby("label", group_keys=False)\
+            .apply(lambda x: x.sample(n=min(len(x), max_per_class), random_state=seed))
+
+        if len(df) > num_of_samples:
+            df = df.sample(n=num_of_samples, random_state=seed)
+
+    return df

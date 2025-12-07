@@ -1,17 +1,25 @@
 import os
 import numpy as np
 import nibabel as nib
+from tqdm import tqdm
 
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 import torch.nn.functional as F
 
 import pytorch_lightning as pl
+from pytorch_lightning.loggers import TensorBoardLogger
 from sklearn.model_selection import train_test_split
-from readFromXlmx import get_oncotype_score_for_series_as_serie_and_label_df
+from monai.networks.nets import DenseNet121
 
+from readFromXlmx import get_oncotype_score_for_series_as_serie_and_label_df
+from load_or_compute_sizes import load_or_compute_sizes
+
+BASE_PATH = 'mri_breast_duke/'
 NIFTI_PATH = "images/tciaNifti"
+
+SEED = 42
 
 
 def pad_collate(batch):
@@ -58,37 +66,73 @@ def pad_collate(batch):
     return vols_tensor, labels_tensor
 
 
+class BucketBySizeSampler(Sampler):
+    def __init__(self, dataset, batch_size):
+        self.dataset = dataset
+        self.batch_size = batch_size
+
+        # Convert shape into a single scalar: volume = D*H*W
+        self.keys = [np.prod(s) for s in dataset.sizes]
+
+        # Sort indices by size
+        self.indices = np.argsort(self.keys)
+
+    def __iter__(self):
+        # Yield sorted indices in batches
+        batch = []
+        for idx in self.indices:
+            batch.append(int(idx))
+            if len(batch) == self.batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+
+    def __len__(self):
+        return len(self.dataset) // self.batch_size + 1
+
+
 class NiftiDataset(Dataset):
-    def __init__(self, df, image_root=NIFTI_PATH, target_col="label", serie_col="serie"):
+    def __init__(self, df,
+                 target_size=None,
+                 image_root=NIFTI_PATH,
+                 target_col="label",
+                 serie_col="serie",
+                 size_cache_path='train'):
         self.df = df.reset_index(drop=True)
         self.image_root = image_root
         self.target_col = target_col
         self.serie_col = serie_col
+        self.target_size = target_size
+        self.size_cache_path = os.path.join(BASE_PATH, size_cache_path + "_volume_sizes.csv")
+        self.sizes = load_or_compute_sizes(self.df, self.size_cache_path, self.image_root, self.serie_col)
 
     def __len__(self):
         return len(self.df)
 
     def _load_nifti(self, serie):
         path = os.path.join(self.image_root, f"{serie}.nii.gz")
-        img = nib.load(path)
-        vol = img.get_fdata().astype(np.float32)
+        vol = nib.load(path).get_fdata().astype(np.float32)
 
         vol = np.squeeze(vol)
+        vol = self.z_score(vol)
+        vol = np.expand_dims(vol, 0)  # (1, D, H, W)
+        vol = torch.from_numpy(vol)
 
+        if self.target_size is not None:
+            vol = F.interpolate(
+                vol.unsqueeze(0),
+                size=self.target_size,
+                mode="trilinear",
+                align_corners=False
+            ).squeeze(0)
+
+        return vol
+
+    def z_score(self, vol):
         mean = vol.mean()
         std = vol.std() + 1e-5
-        vol = (vol - mean) / std
-
-        # Ensure shape is (C, D, H, W) => (1, D, H, W)
-        if vol.ndim == 3:
-            vol = np.expand_dims(vol, 0)  # add channel dim
-        elif vol.ndim == 4:
-            # If already has a channel dim, assume it's first
-            pass
-        else:
-            raise ValueError(f"Unexpected volume shape: {vol.shape}")
-
-        return torch.from_numpy(vol)
+        return (vol - mean) / std
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
@@ -140,10 +184,20 @@ class Simple3DFCN(nn.Module):
         return x
 
 
+class DebugBatchShapeCallback(pl.Callback):
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        x, y = batch
+        print(f"[TRAIN] batch {batch_idx} shape: {tuple(x.shape)}", flush=True)
+
+    def on_validation_batch_start(self, trainer, pl_module, batch, batch_idx):
+        x, y = batch
+        print(f"[VAL]   batch {batch_idx} shape: {tuple(x.shape)}", flush=True)
+
+
 class NiftiClassifier(pl.LightningModule):
-    def __init__(self, lr=1e-3, num_classes=4):
+    def __init__(self, model, lr=1e-3):
         super().__init__()
-        self.model = Simple3DFCN(num_classes=num_classes)
+        self.model = model
         self.loss_fn = nn.CrossEntropyLoss()
         self.lr = lr
 
@@ -152,7 +206,6 @@ class NiftiClassifier(pl.LightningModule):
 
     def _step(self, batch, stage="train"):
         x, y = batch
-        x = F.interpolate(x, size=(64, 64, 64), mode="trilinear", align_corners=False)
 
         logits = self(x)
         loss = self.loss_fn(logits, y)
@@ -163,7 +216,7 @@ class NiftiClassifier(pl.LightningModule):
         self.log(f"{stage}_loss", loss, prog_bar=True)
         self.log(f"{stage}_acc", acc, prog_bar=True)
 
-        return loss
+        return None
 
     def training_step(self, batch, batch_idx):
         return self._step(batch, stage="train")
@@ -172,34 +225,36 @@ class NiftiClassifier(pl.LightningModule):
         self._step(batch, stage="val")
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        return optimizer
+        return torch.optim.Adam(self.parameters(), lr=self.lr)
 
 
 class NiftiDataModule(pl.LightningDataModule):
-    def __init__(self, df, image_root=NIFTI_PATH, batch_size=2, num_workers=4):
+    def __init__(self, df, target_size=None, image_root=NIFTI_PATH, batch_size=2, num_workers=4):
         super().__init__()
         self.df = df
         self.image_root = image_root
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.target_size = target_size
 
     def setup(self, stage=None):
         train_df, val_df = train_test_split(
             self.df,
             test_size=0.2,
-            random_state=42,
+            random_state=SEED,
             stratify=self.df["label"],
         )
 
-        self.train_ds = NiftiDataset(train_df, image_root=self.image_root)
-        self.val_ds = NiftiDataset(val_df, image_root=self.image_root)
+        self.train_ds = self.setup_dataset(train_df, 'train')
+        self.val_ds = self.setup_dataset(val_df, 'val')
+
+    def setup_dataset(self, dataset, label):
+        return NiftiDataset(dataset, size_cache_path=label, target_size=self.target_size, image_root=self.image_root)
 
     def train_dataloader(self):
         return DataLoader(
             self.train_ds,
-            batch_size=self.batch_size,
-            shuffle=True,
+            batch_sampler=BucketBySizeSampler(self.train_ds, batch_size=self.batch_size),
             num_workers=self.num_workers,
             pin_memory=True,
             collate_fn=pad_collate
@@ -208,39 +263,59 @@ class NiftiDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self.val_ds,
-            batch_size=self.batch_size,
-            shuffle=False,
+            batch_sampler=BucketBySizeSampler(self.val_ds, batch_size=self.batch_size),
             num_workers=self.num_workers,
             pin_memory=True,
             collate_fn=pad_collate
         )
 
 
-def main():
-    df = get_oncotype_score_for_series_as_serie_and_label_df()
-
+def train(df, modelName, model):
     data_module = NiftiDataModule(
         df,
-        image_root=NIFTI_PATH,
-        batch_size=1,
+        image_root=BASE_PATH + NIFTI_PATH,
+        batch_size=4,
         num_workers=4,
     )
 
-    model = NiftiClassifier(lr=1e-3, num_classes=4)
+    logger = TensorBoardLogger(
+        save_dir="lightning_logs",
+        name=modelName
+    )
 
     trainer = pl.Trainer(
-        max_epochs=2,
+        max_epochs=5,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
+        logger=logger,
+        callbacks=[DebugBatchShapeCallback()],
+        log_every_n_steps=1,
+        enable_progress_bar=False
     )
-    trainer.fit(model, datamodule=data_module)
+
+    trainer.fit(model=model, datamodule=data_module)
 
     print("\n=== Final Validation Metrics ===")
+    print(f"\n ===      {modelName}      ===")
     metrics = trainer.callback_metrics
     for k, v in metrics.items():
         print(f"{k}: {float(v):.4f}")
 
 
+def main():
+    df = get_oncotype_score_for_series_as_serie_and_label_df(50, 12, SEED)
+    # df = get_oncotype_score_for_series_as_serie_and_label_df()
+
+    num_classes = len(set(df.label))
+    models = [('FCN',
+               NiftiClassifier(Simple3DFCN(num_classes=num_classes))),
+              ('DenseNet',
+               NiftiClassifier(DenseNet121(spatial_dims=3, in_channels=1, out_channels=num_classes)))]
+
+    for model in models:
+        train(df, *model)
+
+
 if __name__ == "__main__":
-    pl.seed_everything(42)
+    pl.seed_everything(SEED)
     main()
