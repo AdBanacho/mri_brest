@@ -1,10 +1,10 @@
 .env
 /.idea
-/mri_breast_duke/.idea
-/mri_breast_duke/features
-/mri_breast_duke/images
-/mri_breast_duke/lightning_logs
-/mri_breast_duke/venv
-/mri_breast_duke/virtualEnv
+/mriBreastDuke/.idea
+/mriBreastDuke/features
+/mriBreastDuke/images
+/mriBreastDuke/lightning_logs
+/mriBreastDuke/venv
+/mriBreastDuke/virtualEnv
 /mama_mia/features
 lightning_logs

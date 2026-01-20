@@ -4,7 +4,6 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from collections import Counter
 
-base_path = "tciaDownload"
 
 folder_list = []
 

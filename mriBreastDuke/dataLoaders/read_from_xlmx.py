@@ -1,20 +1,11 @@
 import os
 import pandas as pd
-from pathlib import Path
 
-THIS_FILE = Path(__file__).resolve()
-
-# project root = parent folder of mri_breast_duke and mama_mia
-PROJECT_ROOT = THIS_FILE.parents[1]
-
-FOLDER_PATH = "mri_breast_duke"
-FEATURES_PATH = "features"
-IMAGES_METADATA = "Duke-Breast-Cancer-MRI_v2_20220609-nbia-digest.xlsx"
-TARGETS_FILE_NAME = "Clinical_and_Other_Features.xlsx"
+from mriBreastDuke.constants import DUKE_PATH, FEATURES_PATH, TARGETS_FILE_NAME, IMAGES_METADATA
 
 
 def base_path(target_path):
-    return os.path.join(PROJECT_ROOT,  FOLDER_PATH, FEATURES_PATH, target_path)
+    return os.path.join(DUKE_PATH, FEATURES_PATH, target_path)
 
 
 def read_patient_id_for_oncotype_score_not_na():
@@ -36,16 +27,14 @@ def read_patient_id_for_oncotype_score_not_na():
     subset.rename(columns={"Patient Information Patient ID": "patientId"}, inplace=True)
     subset['patientId'] = subset['patientId'].astype(str)
 
-    def categorize(score):
+    def categorize(score): # 0-15, 16-25, <25
         score = float(score)
-        if score < 5:
+        if score <= 15:
             return 0
-        elif score < 20:
+        elif score <= 25:
             return 1
-        elif score < 50:
-            return 2
         else:
-            return 3
+            return 2
 
     subset['oncotypeCategory'] = subset['Tumor Characteristics Oncotype score'].apply(categorize)
 

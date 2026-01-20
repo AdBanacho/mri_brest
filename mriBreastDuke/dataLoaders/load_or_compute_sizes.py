@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import nibabel as nib
 from tqdm import tqdm
+from mriBreastDuke.constants import DUKE_PATH
 
 
 def load_or_compute_sizes(df, size_cache_path, image_root, serie_col):
@@ -47,8 +48,7 @@ def load_or_compute_sizes(df, size_cache_path, image_root, serie_col):
 
     for i in tqdm(range(len(df)), desc="Computing shapes"):
         serie = df.iloc[i][serie_col]
-        path = os.path.join(image_root, f"{serie}.nii.gz")
-
+        path = os.path.join(DUKE_PATH, image_root, f"{serie}.nii.gz")
         img = nib.load(path)
         vol = np.squeeze(img.get_fdata().astype(np.float32))
         D, H, W = vol.shape

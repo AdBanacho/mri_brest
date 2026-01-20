@@ -8,4 +8,4 @@ api_key = os.getenv("SYNAPSE")
 
 syn = synapseclient.Synapse()
 syn.login(authToken=api_key)
-entity = syn.get("syn60868042")
+entity = syn.get("syn64871114")

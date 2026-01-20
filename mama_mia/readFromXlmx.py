@@ -1,5 +1,5 @@
 import pandas as pd
-from mri_breast_duke.readFromXlmx import get_oncotype_score_for_series
+from mriBreastDuke.dataLoaders.read_from_xlmx import get_oncotype_score_for_series
 
 FEATURES_PATH = "features/"
 TARGETS_FILE_NAME = "41597_2025_4707_MOESM2_ESM.xlsx"
