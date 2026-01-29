@@ -8,3 +8,6 @@
 /mriBreastDuke/virtualEnv
 /mama_mia/features
 lightning_logs
+__pycache__/
+*.pyc
+/logs

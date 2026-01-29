@@ -57,10 +57,10 @@ stack-data==0.6.3
 sympy==1.13.1
 tcia_utils==3.2.1
 threadpoolctl==3.6.0
-torch==2.6.0+cu124
-torchaudio==2.6.0+cu124
+torch==2.5.1+cu124.post3
+torchaudio==2.5.1+cu124.post3
 torchmetrics==1.8.2
-torchvision==0.21.0+cu124
+torchvision==0.21.0+cu124.post3
 tqdm==4.67.1
 traitlets==5.14.3
 typing_extensions==4.15.0

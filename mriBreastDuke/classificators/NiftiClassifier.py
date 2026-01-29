@@ -27,6 +27,8 @@ class NiftiClassifier(pl.LightningModule):
         x, y = batch
 
         logits = self(x)
+        if isinstance(logits, tuple):
+            logits = logits[0]
         loss = self.loss_fn(logits, y)
 
         preds = torch.argmax(logits, dim=1)
