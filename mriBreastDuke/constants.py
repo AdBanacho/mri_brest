@@ -18,6 +18,7 @@ PLGABANACHO = "plgabanacho"
 IMAGES_HELIOS_PATH = os.path.join(HOME_NET, SCRATCH, HSCRA, PLGRID, PLGABANACHO)
 
 SEED = 42
+MAX_SERIES_PER_STUDY = 5
 
 IMAGES_PATH = os.path.join(STORAGE_PATH, "images")
 DCM_PATH = os.path.join(STORAGE_PATH, "tciaDownload")

@@ -5,8 +5,9 @@ import pytorch_lightning as pl
 import argparse
 from monai.networks.nets import ViT
 
-
-from mriBreastDuke.dataLoaders import get_oncotype_score_for_series_as_serie_and_label_df, NiftiDataModule
+from mriBreastDuke.classificators.VistionTransformer import ViTOnlyLogits
+from mriBreastDuke.dataLoaders import (get_oncotype_score_for_series_as_serie_and_label_df, NiftiDataModule,
+                                       get_oncotype_score_for_series_as_studyId_and_label_df)
 from mriBreastDuke.constants import NIFTI_PATH, SEED, LIGHTING_LOGS
 from mriBreastDuke.classificators import NiftiClassifier, DebugBatchShapeCallback, Simple3DFCN
 
@@ -20,10 +21,11 @@ def parse_args():
 
     return parser.parse_args()
     
-def train(df, model_name, model):
+def train(df, grouped_by_study, model_name, model):
     args = parse_args()
     data_module = NiftiDataModule(
         df,
+        grouped_by_study,
         target_size=(256, 256, 64),
         image_root=NIFTI_PATH,
         batch_size=12,
@@ -56,30 +58,18 @@ def train(df, model_name, model):
 
 def main():
     # df = get_oncotype_score_for_series_as_serie_and_label_df(50, 12, SEED)
-    df = get_oncotype_score_for_series_as_serie_and_label_df()
+    df, grouped_by_study = get_oncotype_score_for_series_as_studyId_and_label_df()
     args = parse_args()
     num_classes = len(set(df.label))
 
-    vit3d = ViT(
-        in_channels=1,
-        img_size=(256, 256, 64),
-        patch_size=(16, 16, 16),   # -> 1024 tokens
-        hidden_size=768,           # "ViT-Base" width
-        mlp_dim=3072,
-        num_layers=12,
-        num_heads=12,
-        classification=True,
-        num_classes=num_classes,
-        dropout_rate=0.1,
-    )
 
     models = [
         ("FCN", NiftiClassifier(Simple3DFCN(num_classes=num_classes))),
         ("DenseNet", NiftiClassifier(DenseNet121(spatial_dims=3, in_channels=1, out_channels=num_classes))),
-        ("ViT3D_Base", NiftiClassifier(vit3d)),
+        ("ViT3D_Base", ViTOnlyLogits(num_classes=num_classes)),
     ]
 
-    train(df, *models[args.model])
+    train(df, grouped_by_study, *models[args.model])
 
 
 

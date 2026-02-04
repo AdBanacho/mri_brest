@@ -27,11 +27,11 @@ def read_patient_id_for_oncotype_score_not_na():
     subset.rename(columns={"Patient Information Patient ID": "patientId"}, inplace=True)
     subset['patientId'] = subset['patientId'].astype(str)
 
-    def categorize(score): # 0-15, 16-25, <25
+    def categorize(score): # 0-18, 19-31, <31
         score = float(score)
-        if score <= 15:
+        if score <= 18:
             return 0
-        elif score <= 25:
+        elif score <= 31:
             return 1
         else:
             return 2
@@ -76,3 +76,17 @@ def get_oncotype_score_for_series_as_serie_and_label_df(num_of_samples=None, max
             df = df.sample(n=num_of_samples, random_state=seed)
 
     return df
+
+
+def get_oncotype_score_for_series_as_studyId_and_label_df():
+    data = get_oncotype_score_for_series()
+    df = pd.DataFrame({
+        "serie": data.studyId,
+        "label": data.oncotypeCategory
+    })
+    grouped_by_study = data[
+        data.groupby("studyId")["seriesId"]
+        .transform("nunique") != 4
+        ].groupby("studyId")
+
+    return df, grouped_by_study

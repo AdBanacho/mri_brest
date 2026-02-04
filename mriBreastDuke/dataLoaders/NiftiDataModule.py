@@ -9,9 +9,10 @@ from mriBreastDuke.constants import NIFTI_PATH, SEED
 
 
 class NiftiDataModule(pl.LightningDataModule):
-    def __init__(self, df, target_size=None, image_root=NIFTI_PATH, batch_size=2, num_workers=4):
+    def __init__(self, df, grouped_by_study, target_size=None, image_root=NIFTI_PATH, batch_size=2, num_workers=4):
         super().__init__()
         self.df = df
+        self.grouped_by_study = grouped_by_study
         self.image_root = image_root
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -30,6 +31,7 @@ class NiftiDataModule(pl.LightningDataModule):
 
     def setup_dataset(self, dataset, label):
         return NiftiDataset(dataset,
+                            grouped_by_study=self.grouped_by_study,
                             size_cache_path=label,
                             target_size=self.target_size,
                             image_root=self.image_root,
@@ -38,7 +40,8 @@ class NiftiDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         return DataLoader(
             self.train_ds,
-            batch_sampler=BucketBySizeSampler(self.train_ds, batch_size=self.batch_size),
+            # batch_sampler=BucketBySizeSampler(self.train_ds, batch_size=self.batch_size),
+            batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
             collate_fn=pad_collate
@@ -47,7 +50,8 @@ class NiftiDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self.val_ds,
-            batch_sampler=BucketBySizeSampler(self.val_ds, batch_size=self.batch_size),
+            # batch_sampler=BucketBySizeSampler(self.val_ds, batch_size=self.batch_size),
+            batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
             collate_fn=pad_collate
