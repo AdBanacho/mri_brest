@@ -35,7 +35,7 @@ class NiftiDataset(Dataset):
         self.serie_col = serie_col
         self.target_size = target_size
         self.size_cache_path = SIZE_CACHE_PATH(size_cache_path)
-        self.sizes = load_or_compute_sizes(self.df, self.size_cache_path, self.image_root, self.serie_col)
+        # self.sizes = load_or_compute_sizes(self.df, self.size_cache_path, self.image_root, self.serie_col)
         self.use_monai = use_monai
 
     def __len__(self):
@@ -146,7 +146,7 @@ class NiftiDataset(Dataset):
 
         series_ids = self.grouped_by_study.get_group(studyId)
         series_ids = series_ids[:MAX_SERIES_PER_STUDY]
-        vols = [self._load_nifti(s) for s in series_ids]
+        vols = [self._load_nifti(s) for s in series_ids.seriesId]
         vol = torch.stack(vols, dim=0)
 
         label = torch.tensor(label, dtype=torch.long)
