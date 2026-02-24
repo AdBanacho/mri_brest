@@ -5,7 +5,6 @@ import pytorch_lightning as pl
 import argparse
 from monai.networks.nets import ViT
 
-from mriBreastDuke.classificators.VistionTransformer import ViTOnlyLogits
 from mriBreastDuke.dataLoaders import (get_oncotype_score_for_series_as_serie_and_label_df, NiftiDataModule,
                                        get_oncotype_score_for_series_as_studyId_and_label_df)
 from mriBreastDuke.constants import NIFTI_PATH, SEED, LIGHTING_LOGS
@@ -28,8 +27,8 @@ def train(df, grouped_by_study, model_name, model):
         grouped_by_study,
         target_size=(256, 256, 64),
         image_root=NIFTI_PATH,
-        batch_size=4,
-        num_workers=2,
+        batch_size=12,
+        num_workers=4,
     )
 
     logger = TensorBoardLogger(
@@ -65,8 +64,8 @@ def main():
 
     models = [
         ("FCN", NiftiClassifier(Simple3DFCN(num_classes=num_classes))),
-        ("DenseNet", NiftiClassifier(DenseNet121(spatial_dims=3, in_channels=5, out_channels=num_classes))),
-        ("ViT3D_Base", ViTOnlyLogits(num_classes=num_classes)),
+        ("DenseNet", NiftiClassifier(DenseNet121(spatial_dims=3, in_channels=1, out_channels=num_classes))),
+        # ("ViT3D_Base", ViTOnlyLogits(num_classes=num_classes)),
     ]
 
     train(df, grouped_by_study, *models[args.model])

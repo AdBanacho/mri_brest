@@ -52,6 +52,17 @@ def read_study_instance_for_patient_ids(patient_ids):
     return data.merge(patient_ids, on="patientId", how="inner")[['patientId', 'studyId', 'seriesId', 'oncotypeCategory']]
 
 
+def get_unique_studies():
+    images_metadata_file = base_path(IMAGES_METADATA)
+    data = pd.read_excel(images_metadata_file, sheet_name="Metadata", header=0)
+
+    data.rename(columns={"Patient ID": "patientId",
+                         "Study Instance UID": "studyId",
+                         "Series Instance UID": "seriesId"}, inplace=True)
+
+    return set(data.studyId)
+
+
 def get_unique_study_instance_for_oncotype_score_as_not_na():
     patient_ids = read_patient_id_for_oncotype_score_not_na()
     return set(read_study_instance_for_patient_ids(patient_ids).studyId)
