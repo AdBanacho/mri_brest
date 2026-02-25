@@ -4,6 +4,16 @@ import pytorch_lightning as pl
 
 from torchmetrics.classification import MulticlassConfusionMatrix, MulticlassAUROC
 
+class DebugBatchShapeCallback(pl.Callback):
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        x, y = batch
+        print(f"[TRAIN] batch {batch_idx} shape: {tuple(x.shape)}", flush=True)
+
+    def on_validation_batch_start(self, trainer, pl_module, batch, batch_idx):
+        x, y = batch
+        print(f"[VAL]   batch {batch_idx} shape: {tuple(x.shape)}", flush=True)
+
+
 
 class NiftiClassifier(pl.LightningModule):
     def __init__(self, model, num_classes: int, lr=1e-3):
