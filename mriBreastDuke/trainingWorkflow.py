@@ -63,8 +63,8 @@ def main():
 
 
     models = [
-        ("FCN", NiftiClassifier(Simple3DFCN(num_classes=num_classes))),
-        ("DenseNet", NiftiClassifier(DenseNet121(spatial_dims=3, in_channels=1, out_channels=num_classes))),
+        ("FCN", NiftiClassifier(Simple3DFCN(num_classes=num_classes), num_classes)),
+        ("DenseNet", NiftiClassifier(DenseNet121(spatial_dims=3, in_channels=1, out_channels=num_classes), num_classes)),
         # ("ViT3D_Base", ViTOnlyLogits(num_classes=num_classes)),
     ]
 
