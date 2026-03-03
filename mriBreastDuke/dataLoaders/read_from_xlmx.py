@@ -88,24 +88,25 @@ def get_oncotype_score_for_series_as_serie_and_label_df(num_of_samples=None, max
 
     return df
 
+
 def get_oncotype_score_for_series_as_studyId_and_label_df():
     data = get_oncotype_score_for_series()
 
-    # Find studyIds that do NOT have exactly 4 unique series
-    valid_study_ids = (
-        data.groupby("studyId")["seriesId"]
-        .nunique()
-        .loc[lambda x: x != 4]
-        .index
+    series_count = data.groupby("studyId")["seriesId"].nunique()
+
+    valid_study_ids = series_count.loc[series_count != 4].index
+
+    filtered = data[data["studyId"].isin(valid_study_ids)]
+
+    df = (
+        filtered
+        .groupby("studyId")
+        .agg(
+            series_ids=("seriesId", lambda x: list(x)),
+            label=("oncotypeCategory", "first")  # assumes label consistent per study
+        )
+        .reset_index()
     )
 
-    # Reduce df to match those studyIds
-    df = pd.DataFrame({
-        "serie": data.studyId,
-        "label": data.oncotypeCategory
-    }).loc[lambda x: x["serie"].isin(valid_study_ids)]
+    return df
 
-    # Grouped data, consistent with df
-    grouped_by_study = data[data["studyId"].isin(valid_study_ids)].groupby("studyId")
-
-    return df, grouped_by_study

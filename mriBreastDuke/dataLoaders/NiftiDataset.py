@@ -21,18 +21,14 @@ from mriBreastDuke.constants import NIFTI_PATH, PREPARED_TO_TRAIN_PATH, SIZE_CAC
 
 class NiftiDataset(Dataset):
     def __init__(self, df,
-                 grouped_by_study,
                  target_size=None,
                  image_root=NIFTI_PATH,
                  target_col="label",
-                 serie_col="serie",
                  size_cache_path='train',
                  use_monai=True):
         self.df = df.reset_index(drop=True)
-        self.grouped_by_study = grouped_by_study
         self.image_root = image_root
         self.target_col = target_col
-        self.serie_col = serie_col
         self.target_size = target_size
         self.size_cache_path = SIZE_CACHE_PATH(size_cache_path)
         # self.sizes = load_or_compute_sizes(self.df, self.size_cache_path, self.image_root, self.serie_col)
@@ -141,15 +137,17 @@ class NiftiDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        studyId = row[self.serie_col]
-        label = row[self.target_col]
 
-        series_ids = self.grouped_by_study.get_group(studyId)
-        series_ids = series_ids[:MAX_SERIES_PER_STUDY]
-        vols = [self._load_nifti(s) for s in series_ids.seriesId]
+        series_ids = row["series_ids"]
+        label = torch.tensor(row[self.target_col], dtype=torch.long)
+
+        vols = []
+
+        for sid in series_ids:
+            vol = self._load_nifti(sid)
+            vols.append(vol)
+
         vol = torch.stack(vols, dim=0)
-
-        label = torch.tensor(label, dtype=torch.long)
 
         return vol, label
 

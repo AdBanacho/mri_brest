@@ -20,11 +20,10 @@ def parse_args():
 
     return parser.parse_args()
     
-def train(df, grouped_by_study, model_name, model):
+def train(df, model_name, model):
     args = parse_args()
     data_module = NiftiDataModule(
         df,
-        grouped_by_study,
         target_size=(256, 256, 64),
         image_root=NIFTI_PATH,
         batch_size=8,
@@ -57,7 +56,7 @@ def train(df, grouped_by_study, model_name, model):
 
 def main():
     # df = get_oncotype_score_for_series_as_serie_and_label_df(50, 12, SEED)
-    df, grouped_by_study = get_oncotype_score_for_series_as_studyId_and_label_df()
+    df = get_oncotype_score_for_series_as_studyId_and_label_df()
     args = parse_args()
     num_classes = len(set(df.label))
 
@@ -68,7 +67,7 @@ def main():
         # ("ViT3D_Base", ViTOnlyLogits(num_classes=num_classes)),
     ]
 
-    train(df, grouped_by_study, *models[args.model])
+    train(df, *models[args.model])
 
 
 
