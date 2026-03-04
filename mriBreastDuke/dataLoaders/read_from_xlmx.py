@@ -102,7 +102,7 @@ def get_oncotype_score_for_series_as_studyId_and_label_df():
         filtered
         .groupby("studyId")
         .agg(
-            series_ids=("seriesId", lambda x: list(x)),
+            series_ids=("seriesId", lambda x: list(x)[:MAX_SERIES_PER_STUDY]),
             label=("oncotypeCategory", "first")  # assumes label consistent per study
         )
         .reset_index()
