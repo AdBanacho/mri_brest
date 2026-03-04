@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 
-from mriBreastDuke.constants import DUKE_PATH, FEATURES_PATH, TARGETS_FILE_NAME, IMAGES_METADATA
+from mriBreastDuke.constants import DUKE_PATH, FEATURES_PATH, TARGETS_FILE_NAME, IMAGES_METADATA, MAX_SERIES_PER_STUDY
 
 
 def base_path(target_path):
