@@ -1,10 +1,13 @@
+from pathlib import Path
+
 from sklearn.model_selection import StratifiedKFold
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import ModelCheckpoint
 import pytorch_lightning as pl
 import torch
 
 from mriBreastDuke.classificators import DebugBatchShapeCallback
-from mriBreastDuke.constants import SEED, LIGHTING_LOGS, NIFTI_PATH
+from mriBreastDuke.constants import SEED, LIGHTING_LOGS, NIFTI_PATH, CHECKPOINTS
 from mriBreastDuke.dataLoaders import NiftiDataModule
 
 
@@ -29,7 +32,6 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
             num_workers=2,
         )
 
-        # IMPORTANT: fresh model + fresh trainer per fold
         model = make_model()
 
         logger = TensorBoardLogger(
@@ -37,23 +39,52 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
             name=f"{model_name}/fold_{fold}",
         )
 
+        # Directory for this fold's checkpoints
+        ckpt_dir = Path(CHECKPOINTS) / model_name / f"fold_{fold}" / "checkpoints"
+
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=str(ckpt_dir),
+            filename="best-{epoch:02d}-{val_loss:.4f}",
+            monitor="val_loss",   # change if your validation metric has another name
+            mode="min",           # "min" for loss, "max" for metrics like val_acc
+            save_top_k=1,         # keep only the best epoch
+            save_last=True,       # optional: also keep the last epoch
+            verbose=True,
+        )
+
         trainer = pl.Trainer(
             max_epochs=epoch,
             accelerator="gpu" if torch.cuda.is_available() else "cpu",
             devices=1,
             logger=logger,
-            callbacks=[DebugBatchShapeCallback()],
+            callbacks=[
+                DebugBatchShapeCallback(),
+                checkpoint_callback,
+            ],
             log_every_n_steps=1,
             enable_progress_bar=True,
         )
 
         trainer.fit(model=model, datamodule=datamodule)
 
-        fold_metrics = {k: float(v) for k, v in trainer.callback_metrics.items() if hasattr(v, "item")}
+        fold_metrics = {
+            k: float(v) for k, v in trainer.callback_metrics.items() if hasattr(v, "item")
+        }
+        fold_metrics["best_model_path"] = checkpoint_callback.best_model_path
+        fold_metrics["best_model_score"] = (
+            float(checkpoint_callback.best_model_score)
+            if checkpoint_callback.best_model_score is not None
+            else None
+        )
         metrics_per_fold.append(fold_metrics)
 
         print(f"\nFold {fold} metrics:")
         for k, v in fold_metrics.items():
-            print(f"  {k}: {v:.4f}")
+            if isinstance(v, float):
+                print(f"  {k}: {v:.4f}")
+            else:
+                print(f"  {k}: {v}")
+
+        print(f"Best checkpoint saved at: {checkpoint_callback.best_model_path}")
 
     return metrics_per_fold
