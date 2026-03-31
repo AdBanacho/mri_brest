@@ -36,7 +36,8 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
 
         logger = TensorBoardLogger(
             save_dir=LIGHTING_LOGS,
-            name=f"{model_name}/fold_{fold}",
+            name=model_name,
+            version=f"fold_{fold}",
         )
 
         # Directory for this fold's checkpoints
@@ -67,16 +68,27 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
 
         trainer.fit(model=model, datamodule=datamodule)
 
+        # Metrics from last epoch (already present)
         fold_metrics = {
             k: float(v) for k, v in trainer.callback_metrics.items() if hasattr(v, "item")
         }
+
+        # Evaluate BEST checkpoint
+        best_metrics = trainer.validate(
+            model=make_model(),
+            datamodule=datamodule,
+            ckpt_path=checkpoint_callback.best_model_path,
+            verbose=False
+        )[0]
+
+        # Store both
         fold_metrics["best_model_path"] = checkpoint_callback.best_model_path
-        fold_metrics["best_model_score"] = (
-            float(checkpoint_callback.best_model_score)
-            if checkpoint_callback.best_model_score is not None
-            else None
-        )
-        metrics_per_fold.append(fold_metrics)
+        fold_metrics["best_val_loss"] = float(checkpoint_callback.best_model_score)
+
+        # Add best checkpoint metrics
+        for k, v in best_metrics.items():
+            if isinstance(v, (int, float)):
+                fold_metrics[f"best_{k}"] = float(v)
 
         print(f"\nFold {fold} metrics:")
         for k, v in fold_metrics.items():
