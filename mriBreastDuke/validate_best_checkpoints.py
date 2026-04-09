@@ -3,10 +3,13 @@ import argparse
 from numbers import Number
 import math
 import re
+import os
 
 from monai.networks.nets import DenseNet121
 from sklearn.model_selection import StratifiedKFold
 import pytorch_lightning as pl
+import numpy as np
+import torch
 
 from mriBreastDuke.constants import CHECKPOINTS, NIFTI_PATH, SEED
 from mriBreastDuke.classificators import NiftiClassifier, Simple3DFCN
@@ -77,6 +80,20 @@ def resolve_fold_checkpoint_dir(checkpoint_root: str, model_name: str, fold: int
     return candidates[0]
 
 
+def configure_checkpoint_loading():
+    # PyTorch 2.6 switched torch.load(weights_only=True) by default.
+    # Lightning checkpoint files from previous runs may require full unpickling.
+    os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+
+    safe_globals = [
+        np.core.multiarray._reconstruct,
+        np.ndarray,
+        np.dtype,
+    ]
+    if hasattr(torch.serialization, "add_safe_globals"):
+        torch.serialization.add_safe_globals(safe_globals)
+
+
 def run_saved_checkpoint_validation(df, model_name, make_model, num_folds, batch_size, num_workers, checkpoint_root):
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=SEED)
 
@@ -144,6 +161,7 @@ def print_summary(metrics_per_fold):
 
 
 def main():
+    configure_checkpoint_loading()
     args = parse_args()
 
     df = get_oncotype_score_for_series_as_studyId_and_label_df()
