@@ -2,7 +2,7 @@ from pathlib import Path
 
 from sklearn.model_selection import StratifiedKFold
 from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 import pytorch_lightning as pl
 import torch
 
@@ -32,7 +32,8 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
             num_workers=2,
         )
 
-        model = make_model()
+        class_weights = _compute_balanced_class_weights(train_df["label"].values)
+        model = make_model(class_weights=class_weights)
 
         logger = TensorBoardLogger(
             save_dir=LIGHTING_LOGS,
@@ -45,11 +46,18 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=str(ckpt_dir),
-            filename="best-{epoch:02d}-{val_loss:.4f}",
-            monitor="val_loss",   # change if your validation metric has another name
-            mode="min",           # "min" for loss, "max" for metrics like val_acc
+            filename="best-{epoch:02d}-{val_sensitivity:.4f}",
+            monitor="val_sensitivity",
+            mode="max",
             save_top_k=1,         # keep only the best epoch
             save_last=True,       # optional: also keep the last epoch
+            verbose=True,
+        )
+        early_stopping = EarlyStopping(
+            monitor="val_sensitivity",
+            mode="max",
+            patience=8,
+            min_delta=1e-4,
             verbose=True,
         )
 
@@ -61,6 +69,7 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
             callbacks=[
                 DebugBatchShapeCallback(),
                 checkpoint_callback,
+                early_stopping,
             ],
             log_every_n_steps=1,
             enable_progress_bar=True,
@@ -75,7 +84,7 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
 
         # Evaluate BEST checkpoint
         best_metrics = trainer.validate(
-            model=make_model(),
+            model=make_model(class_weights=class_weights),
             datamodule=datamodule,
             ckpt_path=checkpoint_callback.best_model_path,
             verbose=False
@@ -99,4 +108,15 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
 
         print(f"Best checkpoint saved at: {checkpoint_callback.best_model_path}")
 
+        metrics_per_fold.append(fold_metrics)
+
     return metrics_per_fold
+
+
+def _compute_balanced_class_weights(labels):
+    label_tensor = torch.as_tensor(labels, dtype=torch.long)
+    class_counts = torch.bincount(label_tensor)
+    total = class_counts.sum().float()
+    num_classes = class_counts.numel()
+    weights = total / (num_classes * class_counts.float().clamp_min(1.0))
+    return weights
