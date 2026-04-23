@@ -2,7 +2,12 @@ import torch
 from torch import nn
 import pytorch_lightning as pl
 
-from torchmetrics.classification import MulticlassConfusionMatrix, MulticlassAUROC, MulticlassROC
+from torchmetrics.classification import (
+    MulticlassConfusionMatrix,
+    MulticlassAUROC,
+    MulticlassROC,
+    MulticlassRecall,
+)
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -18,10 +23,12 @@ class DebugBatchShapeCallback(pl.Callback):
 
 
 class NiftiClassifier(pl.LightningModule):
-    def __init__(self, model, num_classes: int, lr=1e-3, class_names=None):
+    def __init__(self, model, num_classes: int, lr=1e-3, class_names=None, class_weights=None):
         super().__init__()
         self.model = model
-        self.loss_fn = nn.CrossEntropyLoss()
+        if class_weights is not None and not isinstance(class_weights, torch.Tensor):
+            class_weights = torch.tensor(class_weights, dtype=torch.float32)
+        self.loss_fn = nn.CrossEntropyLoss(weight=class_weights)
         self.lr = lr
         self.num_classes = num_classes
         self.class_names = class_names or [str(i) for i in range(num_classes)]
@@ -30,6 +37,7 @@ class NiftiClassifier(pl.LightningModule):
         self.val_cm = MulticlassConfusionMatrix(num_classes=num_classes)
         self.val_auc = MulticlassAUROC(num_classes=num_classes, average="macro")
         self.val_roc = MulticlassROC(num_classes=num_classes)
+        self.val_sensitivity = MulticlassRecall(num_classes=num_classes, average="macro")
 
     def forward(self, x):
         return self.model(x)
@@ -60,13 +68,16 @@ class NiftiClassifier(pl.LightningModule):
         self.val_cm.update(preds, y)
         self.val_auc.update(probs, y)
         self.val_roc.update(probs, y)
+        self.val_sensitivity.update(preds, y)
 
         return loss
 
     def on_validation_epoch_end(self):
         # --- Scalars ---
         auc = self.val_auc.compute()
+        sensitivity = self.val_sensitivity.compute()
         self.log("val_auc_roc", auc, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("val_sensitivity", sensitivity, prog_bar=True, on_step=False, on_epoch=True)
 
         # --- Confusion matrix figure ---
         cm = self.val_cm.compute().detach().cpu().numpy()
@@ -75,7 +86,8 @@ class NiftiClassifier(pl.LightningModule):
         plt.close(fig_cm)
 
         # --- ROC curve figure (one-vs-rest per class) ---
-        fpr, tpr, _ = self.val_roc.compute()  # each: [C, ...]
+        fpr, tpr, thresholds = self.val_roc.compute()  # each: [C, ...]
+        self._print_roc_points(fpr, tpr, thresholds, self.class_names)
         fig_roc = self._fig_multiclass_roc(fpr, tpr, self.class_names)
         self._tb_add_figure("val/roc_curve", fig_roc)
         plt.close(fig_roc)
@@ -84,6 +96,20 @@ class NiftiClassifier(pl.LightningModule):
         self.val_cm.reset()
         self.val_auc.reset()
         self.val_roc.reset()
+        self.val_sensitivity.reset()
+
+    @staticmethod
+    def _print_roc_points(fpr, tpr, thresholds, class_names):
+        print("[VAL] ROC curve points:", flush=True)
+        for c, name in enumerate(class_names):
+            fpr_values = fpr[c].detach().cpu().numpy()
+            tpr_values = tpr[c].detach().cpu().numpy()
+            thr_values = thresholds[c].detach().cpu().numpy()
+            print(
+                f"  class={name} | thresholds={thr_values.tolist()} | "
+                f"fpr={fpr_values.tolist()} | tpr={tpr_values.tolist()}",
+                flush=True,
+            )
 
     def _tb_add_figure(self, tag: str, fig):
         # Works with TensorBoardLogger: self.logger.experiment is a SummaryWriter

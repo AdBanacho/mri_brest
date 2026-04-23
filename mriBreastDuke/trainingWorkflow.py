@@ -23,8 +23,8 @@ def main():
     num_classes = len(set(df.label))
 
     models = [
-        ("FCN", lambda: NiftiClassifier(Simple3DFCN(num_classes=num_classes), num_classes)),
-        ("DenseNet", lambda: NiftiClassifier(DenseNet121(spatial_dims=3, in_channels=5, out_channels=num_classes), num_classes)),
+        ("FCN", lambda class_weights=None: NiftiClassifier(Simple3DFCN(num_classes=num_classes), num_classes, class_weights=class_weights)),
+        ("DenseNet", lambda class_weights=None: NiftiClassifier(DenseNet121(spatial_dims=3, in_channels=5, out_channels=num_classes), num_classes, class_weights=class_weights)),
     ]
 
     model_name, make_model = models[args.model]
