@@ -13,7 +13,7 @@ def read_series_uids():
 
 
 def get_mamamia_images_for_oncotype():
-    duke_oncotype_series = get_oncotype_score_for_series().seriesId
+    duke_oncotype_series = get_oncotype_score_for_series(False).seriesId
     mama_mia_series = read_series_uids()
 
     return list(set(duke_oncotype_series) & set(mama_mia_series))

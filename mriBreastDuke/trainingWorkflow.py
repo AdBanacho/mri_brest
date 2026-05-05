@@ -14,12 +14,13 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=int, default=0, help="0=FCN, 1=DenseNet, 2=ViT3D")
     parser.add_argument("--epoch", type=int, default=50)
+    parser.add_argument("--is_binary_classification", type=bool, default=False)
     return parser.parse_args()
 
 
 def main():
-    df = get_oncotype_score_for_series_as_studyId_and_label_df()
     args = parse_args()
+    df = get_oncotype_score_for_series_as_studyId_and_label_df(args.is_binary_classification)
     num_classes = len(set(df.label))
 
     models = [

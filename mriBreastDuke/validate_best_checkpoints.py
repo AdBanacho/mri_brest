@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("--num_folds", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--is_binary_classification", type=bool, default=False)
     parser.add_argument(
         "--checkpoint_root",
         type=str,
@@ -258,8 +259,7 @@ def print_summary(metrics_per_fold):
 def main():
     configure_checkpoint_loading()
     args = parse_args()
-
-    df = get_oncotype_score_for_series_as_studyId_and_label_df()
+    df = get_oncotype_score_for_series_as_studyId_and_label_df(args.is_binary_classification)
     num_classes = len(set(df.label))
 
     models = [

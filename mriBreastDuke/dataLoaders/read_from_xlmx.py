@@ -8,7 +8,7 @@ def base_path(target_path):
     return os.path.join(DUKE_PATH, FEATURES_PATH, target_path)
 
 
-def read_patient_id_for_oncotype_score_not_na():
+def read_patient_id_for_oncotype_score_not_na(isBinary:bool):
     features_file = base_path(TARGETS_FILE_NAME)
     data = pd.read_excel(features_file, sheet_name="Data", header=[0, 1])
 
@@ -36,7 +36,16 @@ def read_patient_id_for_oncotype_score_not_na():
         else:
             return 2
 
-    subset['oncotypeCategory'] = subset['Tumor Characteristics Oncotype score'].apply(categorize)
+    def categorize_binary(score): # 0-18, 19-31, <31
+        score = float(score)
+        if score <= 18:
+            return 0
+        return 1
+
+    if isBinary:
+        subset['oncotypeCategory'] = subset['Tumor Characteristics Oncotype score'].apply(categorize_binary)
+    else:
+        subset['oncotypeCategory'] = subset['Tumor Characteristics Oncotype score'].apply(categorize)
 
     return subset[['patientId', 'oncotypeCategory']]
 
@@ -68,13 +77,13 @@ def get_unique_study_instance_for_oncotype_score_as_not_na():
     return set(read_study_instance_for_patient_ids(patient_ids).studyId)
 
 
-def get_oncotype_score_for_series():
-    patient_ids = read_patient_id_for_oncotype_score_not_na()
+def get_oncotype_score_for_series(isBinary:bool):
+    patient_ids = read_patient_id_for_oncotype_score_not_na(isBinary)
     return read_study_instance_for_patient_ids(patient_ids)
 
 
 def get_oncotype_score_for_series_as_serie_and_label_df(num_of_samples=None, max_per_class=None, seed=None):
-    data = get_oncotype_score_for_series()
+    data = get_oncotype_score_for_series(False)
     df = pd.DataFrame({
         "serie": data.seriesId,
         "label": data.oncotypeCategory
@@ -89,8 +98,8 @@ def get_oncotype_score_for_series_as_serie_and_label_df(num_of_samples=None, max
     return df
 
 
-def get_oncotype_score_for_series_as_studyId_and_label_df():
-    data = get_oncotype_score_for_series()
+def get_oncotype_score_for_series_as_studyId_and_label_df(isBinary:bool):
+    data = get_oncotype_score_for_series(isBinary)
 
     series_count = data.groupby("studyId")["seriesId"].nunique()
 
