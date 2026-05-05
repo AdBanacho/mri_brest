@@ -13,9 +13,21 @@ from mriBreastDuke.classificators import DebugBatchShapeCallback
 from mriBreastDuke.constants import SEED, LIGHTING_LOGS, NIFTI_PATH, CHECKPOINTS
 from mriBreastDuke.dataLoaders import NiftiDataModule
 
+def _resolve_output_dir(path_like):
+    path = Path(path_like)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    path.mkdir(parents=True, exist_ok=True)
+    return path.resolve()
 
 def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=SEED)
+
+    logs_root = _resolve_output_dir(LIGHTING_LOGS)
+    checkpoints_root = _resolve_output_dir(CHECKPOINTS)
+
+    print(f"[LOGS] TensorBoard root: {logs_root}", flush=True)
+    print(f"[CKPT] Checkpoint root: {checkpoints_root}", flush=True)
 
     y = df["label"].values
     metrics_per_fold = []
@@ -39,14 +51,25 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
         class_weights = _compute_balanced_class_weights(train_df["label"].values)
         model = make_model(class_weights=class_weights)
 
+        fold_version = f"fold_{fold}"
+
         logger = TensorBoardLogger(
-            save_dir=LIGHTING_LOGS,
+            save_dir=str(logs_root),
             name=model_name,
-            version=f"fold_{fold}",
+            version=fold_version,
+            default_hp_metric=False,
         )
 
+        # Force creation early, so the folder appears even before first scalar is written.
+        Path(logger.log_dir).mkdir(parents=True, exist_ok=True)
+
+        print(f"[Fold {fold}] TensorBoard log dir: {logger.log_dir}", flush=True)
+
         # Directory for this fold's checkpoints
-        ckpt_dir = Path(CHECKPOINTS) / model_name / f"fold_{fold}" / "checkpoints"
+        ckpt_dir = checkpoints_root / model_name / fold_version / "checkpoints"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"[Fold {fold}] Checkpoint dir: {ckpt_dir}", flush=True)
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=str(ckpt_dir),
@@ -70,6 +93,7 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
             accelerator="gpu" if torch.cuda.is_available() else "cpu",
             devices=1,
             logger=logger,
+            default_root_dir=str(logs_root / model_name / fold_version),
             callbacks=[
                 DebugBatchShapeCallback(),
                 checkpoint_callback,
@@ -80,6 +104,8 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
         )
 
         trainer.fit(model=model, datamodule=datamodule)
+        if logger is not None and hasattr(logger, "experiment"):
+            logger.experiment.flush()
 
         fold_history = {
             "fold": fold,
@@ -103,21 +129,33 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
         }
 
         # Evaluate BEST checkpoint
-        best_metrics = trainer.validate(
-            model=make_model(class_weights=class_weights),
-            datamodule=datamodule,
-            ckpt_path=checkpoint_callback.best_model_path,
-            verbose=False
-        )[0]
+        # best_metrics = trainer.validate(
+        #     model=make_model(class_weights=class_weights),
+        #     datamodule=datamodule,
+        #     ckpt_path=checkpoint_callback.best_model_path,
+        #     verbose=False
+        # )[0]
+
+        # Final flush/save for this fold.
+        if logger is not None:
+            if hasattr(logger, "save"):
+                logger.save()
+
+            if hasattr(logger, "experiment"):
+                logger.experiment.flush()
+                logger.experiment.close()
+
+            if hasattr(logger, "finalize"):
+                logger.finalize("success")
 
         # Store both
         fold_metrics["best_model_path"] = checkpoint_callback.best_model_path
         fold_metrics["best_val_sensitivity_checkpoint_score"] = float(checkpoint_callback.best_model_score)
 
         # Add best checkpoint metrics
-        for k, v in best_metrics.items():
-            if isinstance(v, (int, float)):
-                fold_metrics[f"best_{k}"] = float(v)
+        # for k, v in best_metrics.items():
+        #     if isinstance(v, (int, float)):
+        #         fold_metrics[f"best_{k}"] = float(v)
 
         print(f"\nFold {fold} metrics:")
         for k, v in fold_metrics.items():
@@ -130,8 +168,11 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
 
         metrics_per_fold.append(fold_metrics)
 
-    summary_dir = Path(LIGHTING_LOGS) / model_name / "cross_validation_summary"
+    summary_dir = logs_root / model_name / "cross_validation_summary"
+    summary_dir.mkdir(parents=True, exist_ok=True)
+
     summary_writer = SummaryWriter(log_dir=str(summary_dir))
+    print(f"[CV SUMMARY] TensorBoard log dir: {summary_dir}", flush=True)
 
     _plot_cv_metric_with_folds(
         histories_per_fold,
