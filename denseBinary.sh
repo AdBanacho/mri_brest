@@ -17,4 +17,4 @@ cd /net/home/plgrid/plgabanacho/mri_brest
 pip install -e .
 pip install --no-cache-dir pytorch_lightning lightning==2.5.6 torchmetrics==1.8.2 requests monai pandas scikit-learn nibabel openpyxl tensorboard einops matplotlib
 
-python -m mriBreastDuke.trainingWorkflow --model 1 --epoch 30
+python -m mriBreastDuke.trainingWorkflow --model 1 --epoch 30 --is_binary_classification True
