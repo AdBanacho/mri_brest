@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=50G
 #SBATCH --time=24:00:00
-#SBATCH --account=plgvirtudrel-gpu-gh200
+#SBATCH --account=plgvirtudrel2026-gpu-gh200
 #SBATCH --partition=plgrid-gpu-gh200
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
