@@ -97,7 +97,7 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
             callbacks=[
                 DebugBatchShapeCallback(),
                 checkpoint_callback,
-                early_stopping,
+                #early_stopping,
             ],
             log_every_n_steps=1,
             enable_progress_bar=True,
