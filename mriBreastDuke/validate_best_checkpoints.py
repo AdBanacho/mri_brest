@@ -47,7 +47,9 @@ def parse_args():
     return parser.parse_args()
 
 
-BEST_CKPT_PATTERN = re.compile(r"best-epoch=(?P<epoch>\d+)-val_loss=(?P<val_loss>[0-9]*\.?[0-9]+)\.ckpt$")
+BEST_CKPT_PATTERN = re.compile(
+    r"best-epoch=(?P<epoch>\d+)-val_sensitivity=(?P<score>[0-9]*\.?[0-9]+)\.ckpt$"
+)
 
 
 def get_best_checkpoint(checkpoint_dir: Path) -> Path:
@@ -60,15 +62,18 @@ def get_best_checkpoint(checkpoint_dir: Path) -> Path:
         match = BEST_CKPT_PATTERN.match(path.name)
         if not match:
             continue
-        val_loss = float(match.group("val_loss"))
+
+        score = float(match.group("score"))
         epoch = int(match.group("epoch"))
-        parsed.append((val_loss, -epoch, path))
+
+        # Higher val_sensitivity is better.
+        parsed.append((score, epoch, path))
 
     if parsed:
-        parsed.sort(key=lambda x: (x[0], x[1]))
+        parsed.sort(key=lambda x: (x[0], x[1]), reverse=True)
         return parsed[0][2]
 
-    return min(candidates, key=lambda p: p.stat().st_mtime)
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def resolve_fold_checkpoint_dir(checkpoint_root: str, model_name: str, fold: int) -> Path:
@@ -169,13 +174,19 @@ def run_saved_checkpoint_validation(
     y = df["label"].values
     fold_metrics = []
 
-    for fold, (_, val_idx) in enumerate(skf.split(df, y), start=1):
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df, y), start=1):
         print(f"\n========== Fold {fold}/{num_folds} ==========")
 
+        train_df = df.iloc[train_idx].reset_index(drop=True)
         val_df = df.iloc[val_idx].reset_index(drop=True)
 
+        class_weights = _compute_balanced_class_weights(
+            train_df["label"].values,
+            num_classes=num_classes,
+        )
+
         datamodule = NiftiDataModule(
-            train_df=val_df,  # required by DataModule, but unused by validate()
+            train_df=val_df,
             val_df=val_df,
             target_size=(256, 256, 64),
             image_root=NIFTI_PATH,
@@ -189,11 +200,13 @@ def run_saved_checkpoint_validation(
         trainer = pl.Trainer(logger=False, enable_progress_bar=True)
 
         metrics = trainer.validate(
-            model=make_model(),
+            model=make_model(class_weights=class_weights),
             datamodule=datamodule,
             ckpt_path=str(checkpoint_path),
             verbose=False,
+            weights_only=False,
         )[0]
+
         model = trainer.lightning_module.eval()
 
         y_true = []
@@ -238,6 +251,14 @@ def run_saved_checkpoint_validation(
 
     return fold_metrics
 
+def _compute_balanced_class_weights(labels, num_classes):
+    label_tensor = torch.as_tensor(labels, dtype=torch.long)
+    class_counts = torch.bincount(label_tensor, minlength=num_classes)
+
+    total = class_counts.sum().float()
+    weights = total / (num_classes * class_counts.float().clamp_min(1.0))
+
+    return weights
 
 def print_summary(metrics_per_fold):
     print("\n========== Validation Summary ==========")
@@ -263,12 +284,24 @@ def main():
     num_classes = len(set(df.label))
 
     models = [
-        ("FCN", lambda: NiftiClassifier(Simple3DFCN(num_classes=num_classes), num_classes)),
+        (
+            "FCN",
+            lambda class_weights=None: NiftiClassifier(
+                Simple3DFCN(num_classes=num_classes),
+                num_classes,
+                class_weights=class_weights,
+            ),
+        ),
         (
             "DenseNet",
-            lambda: NiftiClassifier(
-                DenseNet121(spatial_dims=3, in_channels=5, out_channels=num_classes),
+            lambda class_weights=None: NiftiClassifier(
+                DenseNet121(
+                    spatial_dims=3,
+                    in_channels=5,
+                    out_channels=num_classes,
+                ),
                 num_classes,
+                class_weights=class_weights,
             ),
         ),
     ]
