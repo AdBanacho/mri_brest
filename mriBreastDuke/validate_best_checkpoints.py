@@ -138,18 +138,57 @@ def save_confusion_matrix_chart(y_true: List[int], y_pred: List[int], output_pat
 
 
 def save_roc_curve_chart(y_true: List[int], y_prob: np.ndarray, num_classes: int, output_path: Path):
-    y_true_onehot = label_binarize(y_true, classes=list(range(num_classes)))
+    y_true = np.asarray(y_true)
 
     fig, ax = plt.subplots(figsize=(7, 6))
-    for c in range(num_classes):
-        if np.unique(y_true_onehot[:, c]).size < 2:
-            continue
-        fpr, tpr, _ = roc_curve(y_true_onehot[:, c], y_prob[:, c])
+
+    # -------------------------
+    # Binary classification
+    # -------------------------
+    if num_classes == 2:
+        # y_prob should usually be [N, 2] from softmax.
+        # Use probability of positive class 1.
+        if y_prob.ndim == 2 and y_prob.shape[1] == 2:
+            positive_probs = y_prob[:, 1]
+        elif y_prob.ndim == 2 and y_prob.shape[1] == 1:
+            positive_probs = y_prob[:, 0]
+        else:
+            positive_probs = y_prob.reshape(-1)
+
+        # ROC needs both classes present in y_true.
+        if np.unique(y_true).size < 2:
+            print(
+                f"[ROC] Skipping binary ROC for {output_path}: only one class present in y_true.",
+                flush=True,
+            )
+            plt.close(fig)
+            return
+
+        fpr, tpr, _ = roc_curve(y_true, positive_probs)
         roc_auc = auc(fpr, tpr)
-        ax.plot(fpr, tpr, label=f"class_{c} (AUC={roc_auc:.3f})")
+
+        ax.plot(fpr, tpr, label=f"class_1 positive ROC (AUC={roc_auc:.3f})")
+
+    # -------------------------
+    # Multiclass classification
+    # -------------------------
+    else:
+        y_true_onehot = label_binarize(y_true, classes=list(range(num_classes)))
+
+        for c in range(num_classes):
+            if np.unique(y_true_onehot[:, c]).size < 2:
+                print(
+                    f"[ROC] Skipping class {c}: only one target value present.",
+                    flush=True,
+                )
+                continue
+
+            fpr, tpr, _ = roc_curve(y_true_onehot[:, c], y_prob[:, c])
+            roc_auc = auc(fpr, tpr)
+            ax.plot(fpr, tpr, label=f"class_{c} (AUC={roc_auc:.3f})")
 
     ax.plot([0, 1], [0, 1], linestyle="--")
-    ax.set_title("ROC Curves (One-vs-Rest)")
+    ax.set_title("ROC Curve" if num_classes == 2 else "ROC Curves (One-vs-Rest)")
     ax.set_xlabel("False Positive Rate")
     ax.set_ylabel("True Positive Rate")
     ax.legend(loc="lower right", fontsize=8)
@@ -218,8 +257,19 @@ def run_saved_checkpoint_validation(
             for x, labels in datamodule.val_dataloader():
                 x = x.to(device)
                 logits = model(x)
-                probs = torch.softmax(logits, dim=1).cpu().numpy()
-                preds = np.argmax(probs, axis=1).tolist()
+
+                if num_classes == 2 and (logits.ndim == 1 or logits.shape[1] == 1):
+                    # True binary model: one output logit.
+                    positive_probs = torch.sigmoid(logits.view(-1))
+                    negative_probs = 1.0 - positive_probs
+
+                    probs = torch.stack([negative_probs, positive_probs], dim=1).cpu().numpy()
+                    preds = (positive_probs >= 0.5).long().cpu().numpy().tolist()
+
+                else:
+                    # Multiclass model, or binary model with two logits.
+                    probs = torch.softmax(logits, dim=1).cpu().numpy()
+                    preds = np.argmax(probs, axis=1).tolist()
 
                 y_prob.extend(probs.tolist())
                 y_pred.extend(preds)
