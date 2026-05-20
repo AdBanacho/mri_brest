@@ -15,6 +15,7 @@ def parse_args():
     parser.add_argument("--model", type=int, default=0, help="0=FCN, 1=DenseNet, 2=ViT3D")
     parser.add_argument("--epoch", type=int, default=50)
     parser.add_argument("--is_binary_classification", type=bool, default=False)
+    parser.add_argument("--lr", type=float, default=1e-3)
     return parser.parse_args()
 
 
@@ -24,8 +25,28 @@ def main():
     num_classes = len(set(df.label))
 
     models = [
-        ("FCN", lambda class_weights=None: NiftiClassifier(Simple3DFCN(num_classes=num_classes), num_classes, class_weights=class_weights)),
-        ("DenseNet", lambda class_weights=None: NiftiClassifier(DenseNet121(spatial_dims=3, in_channels=5, out_channels=num_classes), num_classes, class_weights=class_weights)),
+        (
+            "FCN",
+            lambda class_weights=None: NiftiClassifier(
+                Simple3DFCN(num_classes=num_classes),
+                num_classes,
+                lr=args.lr,
+                class_weights=class_weights,
+            ),
+        ),
+        (
+            f"DenseNet_lr_{args.lr:.0e}",
+            lambda class_weights=None: NiftiClassifier(
+                DenseNet121(
+                    spatial_dims=3,
+                    in_channels=5,
+                    out_channels=num_classes,
+                ),
+                num_classes,
+                lr=args.lr,
+                class_weights=class_weights,
+            ),
+        ),
     ]
 
     model_name, make_model = models[args.model]
