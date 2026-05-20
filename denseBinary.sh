@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=dense
+#SBATCH --job-name=binary_dense_lr
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
@@ -8,8 +8,9 @@
 #SBATCH --time=24:00:00
 #SBATCH --account=plgvirtudrel2026-gpu-gh200
 #SBATCH --partition=plgrid-gpu-gh200
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --array=0-4
+#SBATCH --output=logs/%x-%A_%a.out
+#SBATCH --error=logs/%x-%A_%a.err
 
 ml ML-bundle
 
@@ -17,4 +18,16 @@ cd /net/home/plgrid/plgabanacho/mri_brest
 pip install -e .
 pip install --no-cache-dir pytorch_lightning lightning==2.5.6 torchmetrics==1.8.2 requests monai pandas scikit-learn nibabel openpyxl tensorboard einops matplotlib
 
-python -m mriBreastDuke.trainingWorkflow --model 1 --epoch 30 --is_binary_classification True
+LRS=(1e-2 1e-3 1e-4 1e-5 1e-6)
+LR=${LRS[$SLURM_ARRAY_TASK_ID]}
+
+echo "========================================"
+echo "Running DenseNet with learning rate: $LR"
+echo "SLURM_ARRAY_TASK_ID: $SLURM_ARRAY_TASK_ID"
+echo "========================================"
+
+python -m mriBreastDuke.trainingWorkflow \
+    --model 1 \
+    --epoch 30 \
+    --is_binary_classification True \
+    --lr $LR
