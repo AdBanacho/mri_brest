@@ -20,7 +20,16 @@ def _resolve_output_dir(path_like):
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
 
-def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
+def run_5fold_cv(
+    df,
+    model_name,
+    make_model,
+    epoch,
+    num_folds=5,
+    batch_size=8,
+    num_workers=2,
+    positive_boost=1.0,
+):
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=SEED)
 
     logs_root = _resolve_output_dir(LIGHTING_LOGS)
@@ -44,11 +53,14 @@ def run_5fold_cv(df, model_name, make_model, epoch, num_folds=5):
             val_df=val_df,
             target_size=(256, 256, 64),
             image_root=NIFTI_PATH,
-            batch_size=8,
-            num_workers=2,
+            batch_size=batch_size,
+            num_workers=num_workers,
         )
 
-        class_weights = _compute_balanced_class_weights(train_df["label"].values)
+        class_weights = class_weights = _compute_balanced_class_weights(
+    train_df["label"].values,
+    positive_boost=positive_boost,
+)
         model = make_model(class_weights=class_weights)
 
         fold_version = f"fold_{fold}"
@@ -334,10 +346,18 @@ def _plot_cv_metric_with_folds(
 
     print(f"[CV TENSORBOARD] Added figure: {tag}")
 
-def _compute_balanced_class_weights(labels):
+def _compute_balanced_class_weights(labels, positive_boost=1.0):
     label_tensor = torch.as_tensor(labels, dtype=torch.long)
+
     class_counts = torch.bincount(label_tensor)
     total = class_counts.sum().float()
     num_classes = class_counts.numel()
+
     weights = total / (num_classes * class_counts.float().clamp_min(1.0))
+
+    if num_classes == 2:
+        weights[1] *= positive_boost
+
+    print(f"[CLASS WEIGHTS] counts={class_counts.tolist()} weights={weights.tolist()}", flush=True)
+
     return weights
