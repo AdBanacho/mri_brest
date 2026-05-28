@@ -22,12 +22,16 @@ from mriBreastDuke.dataLoaders import (
     get_oncotype_score_for_series_as_studyId_and_label_df,
 )
 
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Load best checkpoints from each CV fold and run validation."
     )
     parser.add_argument("--model", type=int, default=0, help="0=FCN, 1=DenseNet")
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--sensitivity_lambda", type=float, default=None)
+    parser.add_argument("--positive_boost", type=float, default=None)
+    parser.add_argument("--weight_decay", type=float, default=None)
+    parser.add_argument("--top_k_checkpoints", type=int, default=3)
     parser.add_argument("--num_folds", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=2)
@@ -48,32 +52,37 @@ def parse_args():
 
 
 BEST_CKPT_PATTERN = re.compile(
-    r"best-epoch=(?P<epoch>\d+)-val_sensitivity=(?P<score>[0-9]*\.?[0-9]+)\.ckpt$"
+    r"best-epoch=(?P<epoch>\d+)-val_sensitivity=(?P<sensitivity>[0-9]*\.?[0-9]+)"
+    r"(?:-val_auc_roc=(?P<auc>[0-9]*\.?[0-9]+))?\.ckpt$"
 )
 
 
-def get_best_checkpoint(checkpoint_dir: Path) -> Path:
+def get_top_checkpoints(checkpoint_dir: Path, top_k: int = 3) -> List[Path]:
     candidates = list(checkpoint_dir.glob("best-*.ckpt"))
+
     if not candidates:
         raise FileNotFoundError(f"No best-*.ckpt file found in: {checkpoint_dir}")
 
     parsed = []
+
     for path in candidates:
         match = BEST_CKPT_PATTERN.match(path.name)
-        if not match:
-            continue
 
-        score = float(match.group("score"))
-        epoch = int(match.group("epoch"))
+        if match:
+            sensitivity = float(match.group("sensitivity"))
+            auc_value = match.group("auc")
+            auc_value = float(auc_value) if auc_value is not None else -1.0
+            epoch = int(match.group("epoch"))
 
-        # Higher val_sensitivity is better.
-        parsed.append((score, epoch, path))
+            # Higher sensitivity is primary, AUC secondary, epoch tertiary.
+            parsed.append((sensitivity, auc_value, epoch, path))
+        else:
+            # Fallback for unexpected names.
+            parsed.append((-1.0, -1.0, -1, path))
 
-    if parsed:
-        parsed.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        return parsed[0][2]
+    parsed.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
 
-    return max(candidates, key=lambda p: p.stat().st_mtime)
+    return [item[3] for item in parsed[:top_k]]
 
 
 def resolve_fold_checkpoint_dir(checkpoint_root: str, model_name: str, fold: int) -> Path:
@@ -207,6 +216,7 @@ def run_saved_checkpoint_validation(
     checkpoint_root,
     charts_dir,
     num_classes,
+    top_k_checkpoints=3,
 ):
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=SEED)
 
@@ -234,19 +244,91 @@ def run_saved_checkpoint_validation(
         )
 
         checkpoint_dir = resolve_fold_checkpoint_dir(checkpoint_root, model_name, fold)
-        checkpoint_path = get_best_checkpoint(checkpoint_dir)
+        checkpoint_paths = get_top_checkpoints(
+            checkpoint_dir,
+            top_k=top_k_checkpoints,
+        )
 
-        trainer = pl.Trainer(logger=False, enable_progress_bar=True)
+        for checkpoint_rank, checkpoint_path in enumerate(checkpoint_paths, start=1):
+            print(
+                f"[Fold {fold}] Validating checkpoint rank {checkpoint_rank}: {checkpoint_path}",
+                flush=True,
+            )
 
-        metrics = trainer.validate(
-            model=make_model(class_weights=class_weights),
-            datamodule=datamodule,
-            ckpt_path=str(checkpoint_path),
-            verbose=False,
-            weights_only=False,
-        )[0]
+            trainer = pl.Trainer(logger=False, enable_progress_bar=True)
 
-        model = trainer.lightning_module.eval()
+            metrics = trainer.validate(
+                model=make_model(class_weights=class_weights),
+                datamodule=datamodule,
+                ckpt_path=str(checkpoint_path),
+                verbose=False,
+                weights_only=False,
+            )[0]
+
+            model = trainer.lightning_module.eval()
+
+            y_true = []
+            y_pred = []
+            y_prob = []
+            device = model.device
+
+            with torch.no_grad():
+                for x, labels in datamodule.val_dataloader():
+                    x = x.to(device)
+                    logits = model(x)
+
+                    if num_classes == 2 and (logits.ndim == 1 or logits.shape[1] == 1):
+                        positive_probs = torch.sigmoid(logits.view(-1))
+                        negative_probs = 1.0 - positive_probs
+
+                        probs = torch.stack(
+                            [negative_probs, positive_probs],
+                            dim=1,
+                        ).cpu().numpy()
+
+                        preds = (positive_probs >= 0.5).long().cpu().numpy().tolist()
+
+                    else:
+                        probs = torch.softmax(logits, dim=1).cpu().numpy()
+                        preds = np.argmax(probs, axis=1).tolist()
+
+                    y_prob.extend(probs.tolist())
+                    y_pred.extend(preds)
+                    y_true.extend(labels.cpu().numpy().tolist())
+
+            fold_chart_dir = (
+                    Path(charts_dir)
+                    / model_name
+                    / f"fold_{fold}"
+                    / f"checkpoint_rank_{checkpoint_rank}"
+            )
+            fold_chart_dir.mkdir(parents=True, exist_ok=True)
+
+            cm_path = fold_chart_dir / "confusion_matrix.png"
+            roc_path = fold_chart_dir / "roc_curve.png"
+
+            save_confusion_matrix_chart(y_true, y_pred, cm_path)
+            save_roc_curve_chart(y_true, np.array(y_prob), num_classes, roc_path)
+
+            serialized_metrics = {
+                k: float(v) if isinstance(v, Number) else v
+                for k, v in metrics.items()
+            }
+
+            serialized_metrics["fold"] = fold
+            serialized_metrics["checkpoint_rank"] = checkpoint_rank
+            serialized_metrics["checkpoint_path"] = str(checkpoint_path)
+            serialized_metrics["confusion_matrix_path"] = str(cm_path)
+            serialized_metrics["roc_curve_path"] = str(roc_path)
+
+            fold_metrics.append(serialized_metrics)
+
+            print(f"Checkpoint rank {checkpoint_rank}: {checkpoint_path}")
+            for k, v in serialized_metrics.items():
+                if isinstance(v, float):
+                    print(f"  {k}: {v:.4f}")
+                else:
+                    print(f"  {k}: {v}")
 
         y_true = []
         y_pred = []
@@ -326,6 +408,30 @@ def print_summary(metrics_per_fold):
             std = (sum((v - mean) ** 2 for v in numeric_values) / len(numeric_values)) ** 0.5
             print(f"{k}: mean={mean:.4f}, std={std:.4f}")
 
+def build_model_name(base_name, args):
+    """
+    Builds the same model_name used during training.
+
+    If hyperparameter args are not provided, returns base_name.
+    """
+    if args.lr is None:
+        return base_name
+
+    parts = [f"{base_name}_lr_{args.lr:.0e}"]
+
+    if args.sensitivity_lambda is not None:
+        parts.append(f"sens_{args.sensitivity_lambda}")
+
+    if args.positive_boost is not None:
+        parts.append(f"posboost_{args.positive_boost}")
+
+    if args.weight_decay is not None:
+        parts.append(f"wd_{args.weight_decay:.0e}")
+
+    parts.append(f"bs_{args.batch_size}")
+
+    return "_".join(parts)
+
 
 def main():
     configure_checkpoint_loading()
@@ -356,7 +462,11 @@ def main():
         ),
     ]
 
-    model_name, make_model = models[args.model]
+    base_model_name, make_model = models[args.model]
+    model_name = build_model_name(base_model_name, args)
+
+    print(f"[VALIDATION] Base model name: {base_model_name}", flush=True)
+    print(f"[VALIDATION] Resolved checkpoint model name: {model_name}", flush=True)
 
     metrics_per_fold = run_saved_checkpoint_validation(
         df=df,
@@ -368,6 +478,7 @@ def main():
         checkpoint_root=args.checkpoint_root,
         charts_dir=args.charts_dir,
         num_classes=num_classes,
+        top_k_checkpoints=args.top_k_checkpoints,
     )
 
     print_summary(metrics_per_fold)
