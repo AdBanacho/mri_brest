@@ -122,26 +122,46 @@ def configure_checkpoint_loading():
         torch.serialization.add_safe_globals(safe_globals)
 
 
-def save_confusion_matrix_chart(y_true: List[int], y_pred: List[int], output_path: Path):
-    cm = confusion_matrix(y_true, y_pred)
+def save_confusion_matrix_chart(
+    y_true: List[int],
+    y_pred: List[int],
+    output_path: Path,
+    normalize: bool = False,
+    title: str = None,
+):
+    labels = sorted(set(y_true) | set(y_pred))
+    cm = confusion_matrix(
+        y_true,
+        y_pred,
+        labels=labels,
+        normalize="true" if normalize else None,
+    )
+
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.imshow(cm, interpolation="nearest")
-    ax.set_title("Confusion Matrix")
+    ax.set_title(
+        title
+        or ("Normalized Confusion Matrix" if normalize else "Confusion Matrix")
+    )
     ax.set_xlabel("Predicted")
     ax.set_ylabel("True")
-    ax.set_xticks(range(cm.shape[1]))
-    ax.set_yticks(range(cm.shape[0]))
+    ax.set_xticks(range(len(labels)))
+    ax.set_yticks(range(len(labels)))
+    ax.set_xticklabels(labels)
+    ax.set_yticklabels(labels)
 
     threshold = cm.max() * 0.6 if cm.size else 0
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):
+            value = cm[i, j]
+            label = f"{value:.2f}" if normalize else str(int(value))
             ax.text(
                 j,
                 i,
-                str(cm[i, j]),
+                label,
                 ha="center",
                 va="center",
-                color="white" if cm[i, j] > threshold else "black",
+                color="white" if value > threshold else "black",
             )
 
     fig.tight_layout()
@@ -209,6 +229,179 @@ def save_roc_curve_chart(y_true: List[int], y_prob: np.ndarray, num_classes: int
     plt.close(fig)
 
 
+
+
+def save_mean_roc_curve_chart(
+    fold_predictions,
+    num_classes: int,
+    output_path: Path,
+):
+    """
+    Saves an aggregate mean ROC curve across CV folds.
+
+    Binary classification:
+      - one mean ROC curve for positive class 1
+      - +/- 1 std TPR band
+
+    Multiclass classification:
+      - one mean one-vs-rest ROC curve per class
+      - mean AUC +/- std AUC in labels
+    """
+    mean_fpr = np.linspace(0, 1, 100)
+    fig, ax = plt.subplots(figsize=(7, 6))
+
+    if num_classes == 2:
+        tprs = []
+        aucs = []
+
+        for fold_result in fold_predictions:
+            y_true = np.asarray(fold_result["y_true"])
+            y_prob = np.asarray(fold_result["y_prob"])
+
+            if y_prob.ndim == 2 and y_prob.shape[1] >= 2:
+                positive_probs = y_prob[:, 1]
+            elif y_prob.ndim == 2 and y_prob.shape[1] == 1:
+                positive_probs = y_prob[:, 0]
+            else:
+                positive_probs = y_prob.reshape(-1)
+
+            if np.unique(y_true).size < 2:
+                print(
+                    f"[ROC] Skipping fold {fold_result.get('fold')}: only one class present.",
+                    flush=True,
+                )
+                continue
+
+            fpr, tpr, _ = roc_curve(y_true, positive_probs)
+            fold_auc = auc(fpr, tpr)
+
+            interp_tpr = np.interp(mean_fpr, fpr, tpr)
+            interp_tpr[0] = 0.0
+            tprs.append(interp_tpr)
+            aucs.append(fold_auc)
+
+        if not tprs:
+            print(f"[ROC] Skipping aggregate ROC for {output_path}: no valid folds.", flush=True)
+            plt.close(fig)
+            return
+
+        mean_tpr = np.mean(tprs, axis=0)
+        mean_tpr[-1] = 1.0
+        std_tpr = np.std(tprs, axis=0)
+        mean_auc = np.mean(aucs)
+        std_auc = np.std(aucs)
+
+        ax.plot(
+            mean_fpr,
+            mean_tpr,
+            label=f"Mean ROC, class_1 (AUC={mean_auc:.3f}±{std_auc:.3f})",
+        )
+        ax.fill_between(
+            mean_fpr,
+            np.maximum(mean_tpr - std_tpr, 0),
+            np.minimum(mean_tpr + std_tpr, 1),
+            alpha=0.2,
+            label="±1 std. dev.",
+        )
+
+    else:
+        for c in range(num_classes):
+            tprs = []
+            aucs = []
+
+            for fold_result in fold_predictions:
+                y_true = np.asarray(fold_result["y_true"])
+                y_prob = np.asarray(fold_result["y_prob"])
+                y_true_onehot = label_binarize(y_true, classes=list(range(num_classes)))
+
+                if np.unique(y_true_onehot[:, c]).size < 2:
+                    print(
+                        f"[ROC] Skipping class {c} in fold {fold_result.get('fold')}: only one target value present.",
+                        flush=True,
+                    )
+                    continue
+
+                fpr, tpr, _ = roc_curve(y_true_onehot[:, c], y_prob[:, c])
+                fold_auc = auc(fpr, tpr)
+
+                interp_tpr = np.interp(mean_fpr, fpr, tpr)
+                interp_tpr[0] = 0.0
+                tprs.append(interp_tpr)
+                aucs.append(fold_auc)
+
+            if not tprs:
+                continue
+
+            mean_tpr = np.mean(tprs, axis=0)
+            mean_tpr[-1] = 1.0
+            mean_auc = np.mean(aucs)
+            std_auc = np.std(aucs)
+
+            ax.plot(
+                mean_fpr,
+                mean_tpr,
+                label=f"class_{c} mean ROC (AUC={mean_auc:.3f}±{std_auc:.3f})",
+            )
+
+    ax.plot([0, 1], [0, 1], linestyle="--")
+    ax.set_title("Mean ROC Across Folds" if num_classes == 2 else "Mean One-vs-Rest ROC Across Folds")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.legend(loc="lower right", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def save_aggregate_fold_charts(
+    fold_predictions,
+    charts_dir,
+    model_name,
+    num_classes,
+):
+    if not fold_predictions:
+        print("[AGGREGATE] No fold predictions available; skipping aggregate charts.", flush=True)
+        return
+
+    aggregate_chart_dir = Path(charts_dir) / model_name / "aggregate"
+    aggregate_chart_dir.mkdir(parents=True, exist_ok=True)
+
+    all_y_true = []
+    all_y_pred = []
+
+    for fold_result in fold_predictions:
+        all_y_true.extend(fold_result["y_true"])
+        all_y_pred.extend(fold_result["y_pred"])
+
+    pooled_cm_path = aggregate_chart_dir / "confusion_matrix_pooled.png"
+    normalized_cm_path = aggregate_chart_dir / "confusion_matrix_normalized.png"
+    mean_roc_path = aggregate_chart_dir / "roc_mean_std.png"
+
+    save_confusion_matrix_chart(
+        all_y_true,
+        all_y_pred,
+        pooled_cm_path,
+        normalize=False,
+        title="Pooled Confusion Matrix Across Folds",
+    )
+    save_confusion_matrix_chart(
+        all_y_true,
+        all_y_pred,
+        normalized_cm_path,
+        normalize=True,
+        title="Normalized Pooled Confusion Matrix Across Folds",
+    )
+    save_mean_roc_curve_chart(
+        fold_predictions,
+        num_classes,
+        mean_roc_path,
+    )
+
+    print("\n========== Aggregate Charts ==========")
+    print(f"Pooled confusion matrix: {pooled_cm_path}")
+    print(f"Normalized pooled confusion matrix: {normalized_cm_path}")
+    print(f"Mean ROC +/- std: {mean_roc_path}")
+
 def run_saved_checkpoint_validation(
     df,
     model_name,
@@ -225,6 +418,7 @@ def run_saved_checkpoint_validation(
 
     y = df["label"].values
     fold_metrics = []
+    fold_predictions_rank_1 = []
 
     for fold, (train_idx, val_idx) in enumerate(skf.split(df, y), start=1):
         print(f"\n========== Fold {fold}/{num_folds} ==========")
@@ -313,6 +507,20 @@ def run_saved_checkpoint_validation(
             save_confusion_matrix_chart(y_true, y_pred, cm_path)
             save_roc_curve_chart(y_true, np.array(y_prob), num_classes, roc_path)
 
+            # Keep one prediction set per CV fold for aggregate charts.
+            # Rank 1 is used as the final/best checkpoint for each fold so that
+            # aggregate charts do not mix multiple checkpoints from the same fold.
+            if checkpoint_rank == 1:
+                fold_predictions_rank_1.append(
+                    {
+                        "fold": fold,
+                        "checkpoint_path": str(checkpoint_path),
+                        "y_true": list(y_true),
+                        "y_pred": list(y_pred),
+                        "y_prob": np.array(y_prob),
+                    }
+                )
+
             serialized_metrics = {
                 k: float(v) if isinstance(v, Number) else v
                 for k, v in metrics.items()
@@ -383,6 +591,13 @@ def run_saved_checkpoint_validation(
                 print(f"  {k}: {v:.4f}")
             else:
                 print(f"  {k}: {v}")
+
+    save_aggregate_fold_charts(
+        fold_predictions=fold_predictions_rank_1,
+        charts_dir=charts_dir,
+        model_name=model_name,
+        num_classes=num_classes,
+    )
 
     return fold_metrics
 

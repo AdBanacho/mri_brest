@@ -8,18 +8,20 @@
 #SBATCH --time=24:00:00
 #SBATCH --account=plgvirtudrel2026-gpu-gh200
 #SBATCH --partition=plgrid-gpu-gh200
-#SBATCH --array=0-8
+#SBATCH --array=0-27%9
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 
 ml ML-bundle
+
+sleep $(( (SLURM_ARRAY_TASK_ID % 9) * 30 ))
 
 cd /net/home/plgrid/plgabanacho/mri_brest
 
 pip install -e .
 pip install --no-cache-dir pytorch_lightning lightning==2.5.6 torchmetrics==1.8.2 requests monai pandas scikit-learn nibabel openpyxl tensorboard einops matplotlib
 
-LRS=(1e-4)
+LRS=(1e-3 1e-4 1e-5)
 SENS_LAMBDAS=(0.3 0.7 1.0)
 POS_BOOSTS=(1.0 2.0 3.0)
 BATCH_SIZES=(8)
