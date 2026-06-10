@@ -15,12 +15,15 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-from mriBreastDuke.constants import CHECKPOINTS, NIFTI_PATH, SEED
+from mriBreastDuke.constants import CHECKPOINTS_PATH, NIFTI_PATH, SEED, VALIDATION_CHART_PATH
 from mriBreastDuke.classificators import NiftiClassifier, Simple3DFCN
 from mriBreastDuke.dataLoaders import (
     NiftiDataModule,
     get_oncotype_score_for_series_as_studyId_and_label_df,
 )
+
+
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -39,13 +42,13 @@ def parse_args():
     parser.add_argument(
         "--checkpoint_root",
         type=str,
-        default=CHECKPOINTS,
+        default=CHECKPOINTS_PATH,
         help="Root directory that contains model fold checkpoints.",
     )
     parser.add_argument(
         "--charts_dir",
         type=str,
-        default="validation_charts",
+        default=VALIDATION_CHART_PATH,
         help="Directory where fold confusion matrix and ROC charts will be saved.",
     )
     return parser.parse_args()

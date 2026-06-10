@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 
 from mriBreastDuke.classificators import DebugBatchShapeCallback
-from mriBreastDuke.constants import SEED, LIGHTING_LOGS, NIFTI_PATH, CHECKPOINTS
+from mriBreastDuke.constants import SEED, LIGHTING_LOGS, NIFTI_PATH, CHECKPOINTS_PATH
 from mriBreastDuke.dataLoaders import NiftiDataModule
 
 def _resolve_output_dir(path_like):
@@ -33,7 +33,7 @@ def run_5fold_cv(
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=SEED)
 
     logs_root = _resolve_output_dir(LIGHTING_LOGS)
-    checkpoints_root = _resolve_output_dir(CHECKPOINTS)
+    checkpoints_root = _resolve_output_dir(CHECKPOINTS_PATH)
 
     print(f"[LOGS] TensorBoard root: {logs_root}", flush=True)
     print(f"[CKPT] Checkpoint root: {checkpoints_root}", flush=True)

@@ -33,5 +33,6 @@ TARGETS_FILE_NAME = os.path.join(FEATURES_PATH, "Clinical_and_Other_Features.xls
 SIZE_CACHE_PATH = lambda x: os.path.join(FEATURES_PATH, x + "_volume_sizes.csv")
 
 LIGHTING_LOGS = "lightning_logs"
-CHECKPOINTS = "check_points"
+CHECKPOINTS_PATH = os.path.join(IMAGES_HELIOS_PATH, "check_points")
 
+VALIDATION_CHART_PATH = "validation_charts"
