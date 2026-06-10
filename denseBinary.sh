@@ -24,7 +24,7 @@ pip install --no-cache-dir pytorch_lightning lightning==2.5.6 torchmetrics==1.8.
 LRS=(1e-3 1e-4 1e-5)
 SENS_LAMBDAS=(0.3 0.7 1.0)
 POS_BOOSTS=(1.0 2.0 3.0)
-BATCH_SIZES=(8, 16)
+BATCH_SIZES=(8)
 
 N_LR=${#LRS[@]}
 N_SENS=${#SENS_LAMBDAS[@]}
