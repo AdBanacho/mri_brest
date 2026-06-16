@@ -27,14 +27,11 @@ def read_patient_id_for_oncotype_score_not_na(isBinary:bool):
     subset.rename(columns={"Patient Information Patient ID": "patientId"}, inplace=True)
     subset['patientId'] = subset['patientId'].astype(str)
 
-    def categorize(score): # 0-18, 19-31, <31
+    def categorize(score):  # binary split: <=18 -> 0, >18 -> 1
         score = float(score)
         if score <= 18:
             return 0
-        elif score <= 31:
-            return 1
-        else:
-            return 2
+        return 1
 
     def categorize_binary(score): # 0-18, 19-31, <31
         score = float(score)
@@ -118,4 +115,3 @@ def get_oncotype_score_for_series_as_studyId_and_label_df(isBinary:bool):
     )
 
     return df
-
