@@ -32,6 +32,7 @@ FEATURES_PATH = os.path.join(DUKE_PATH, "features")
 IMAGES_METADATA = os.path.join(FEATURES_PATH, "Duke-Breast-Cancer-MRI_v2_20220609-nbia-digest.xlsx")
 TARGETS_FILE_NAME = os.path.join(FEATURES_PATH, "Clinical_and_Other_Features.xlsx")
 SIZE_CACHE_PATH = lambda x: os.path.join(FEATURES_PATH, x + "_volume_sizes.csv")
+IMAGING_FEATURES_FILE_NAME = os.path.join(FEATURES_PATH, "Imaging_Features.xlsx")
 
 LIGHTING_LOGS = "lightning_logs"
 CHECKPOINTS_PATH = os.path.join(IMAGES_HELIOS_PATH, "check_points")

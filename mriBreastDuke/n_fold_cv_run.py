@@ -47,6 +47,128 @@ def _predict_image_probabilities(model, dataloader, num_classes):
 
     return np.concatenate(probabilities), np.concatenate(labels)
 
+
+def _validate_cv_inputs(
+    df,
+    num_folds,
+    group_column,
+    continuous_columns,
+    categorical_columns,
+    tabular_model_factory,
+    fusion_alpha,
+):
+    """Validate labels, groups, and merged tabular columns before training."""
+    if "label" not in df.columns:
+        raise ValueError("The cross-validation DataFrame must contain 'label'.")
+    if len(df) == 0:
+        raise ValueError("The cross-validation DataFrame is empty.")
+    if num_folds < 2:
+        raise ValueError("num_folds must be at least 2.")
+    if df["label"].isna().any():
+        raise ValueError("The label column contains missing values.")
+
+    labels = df["label"].to_numpy()
+    integer_labels = labels.astype(np.int64)
+    if not np.array_equal(labels, integer_labels):
+        raise ValueError("Labels must be integers encoded from 0 to C-1.")
+    unique_labels = np.unique(integer_labels)
+    expected_labels = np.arange(len(unique_labels))
+    if not np.array_equal(unique_labels, expected_labels):
+        raise ValueError(
+            "Labels must be contiguous integers encoded from 0 to C-1; "
+            f"received {unique_labels.tolist()}."
+        )
+    if len(unique_labels) < 2:
+        raise ValueError("Cross-validation requires at least two classes.")
+
+    continuous_columns = tuple(continuous_columns or ())
+    categorical_columns = tuple(categorical_columns or ())
+    all_tabular_columns = (*continuous_columns, *categorical_columns)
+    if len(set(all_tabular_columns)) != len(all_tabular_columns):
+        raise ValueError(
+            "Each tabular feature must appear exactly once across continuous "
+            "and categorical columns."
+        )
+    missing_columns = sorted(set(all_tabular_columns).difference(df.columns))
+    if missing_columns:
+        raise ValueError(
+            f"Missing tabular feature columns: {missing_columns[:10]}"
+        )
+    if "label" in all_tabular_columns:
+        raise ValueError("The target label cannot be used as a tabular feature.")
+
+    use_tabular_features = bool(all_tabular_columns)
+    if use_tabular_features != (tabular_model_factory is not None):
+        raise ValueError(
+            "Tabular columns and tabular_model_factory must be provided together."
+        )
+    if not 0.0 <= fusion_alpha <= 1.0:
+        raise ValueError("fusion_alpha must be between 0 and 1.")
+
+    if group_column is None:
+        class_counts = np.bincount(integer_labels, minlength=len(unique_labels))
+        if np.any(class_counts < num_folds):
+            raise ValueError(
+                "Every class must contain at least num_folds rows for "
+                f"StratifiedKFold; counts={class_counts.tolist()}, "
+                f"num_folds={num_folds}."
+            )
+    else:
+        if group_column not in df.columns:
+            raise ValueError(
+                f"group_column '{group_column}' is not present in the DataFrame."
+            )
+        if df[group_column].isna().any():
+            raise ValueError(f"group_column '{group_column}' contains missing values.")
+
+        group_label_counts = df.groupby(group_column, sort=False)["label"].nunique()
+        inconsistent = group_label_counts[group_label_counts > 1]
+        if not inconsistent.empty:
+            examples = ", ".join(map(str, inconsistent.index[:5]))
+            raise ValueError(
+                f"Each '{group_column}' group must have one label; inconsistent "
+                f"groups include: {examples}."
+            )
+
+        unique_group_labels = df[[group_column, "label"]].drop_duplicates()
+        groups_per_class = (
+            unique_group_labels.groupby("label")[group_column]
+            .nunique()
+            .reindex(expected_labels, fill_value=0)
+            .to_numpy()
+        )
+        if np.any(groups_per_class < num_folds):
+            raise ValueError(
+                "Every class must contain at least num_folds distinct patient "
+                f"groups; counts={groups_per_class.tolist()}, "
+                f"num_folds={num_folds}."
+            )
+
+    return integer_labels, continuous_columns, categorical_columns
+
+
+def _validate_fold_separation(
+    train_df,
+    validation_df,
+    group_column,
+    expected_classes,
+):
+    """Fail early if a generated fold loses a class or leaks a patient group."""
+    train_classes = np.unique(train_df["label"].to_numpy(dtype=np.int64))
+    if not np.array_equal(train_classes, expected_classes):
+        raise ValueError(
+            "A training fold is missing one or more classes; "
+            f"received {train_classes.tolist()}, expected {expected_classes.tolist()}."
+        )
+    if group_column is not None:
+        overlap = set(train_df[group_column]).intersection(validation_df[group_column])
+        if overlap:
+            examples = ", ".join(map(str, list(overlap)[:5]))
+            raise RuntimeError(
+                f"Patient-group leakage detected between train and validation: {examples}."
+            )
+
+
 def run_5fold_cv(
     df,
     model_name,
@@ -61,18 +183,37 @@ def run_5fold_cv(
     clinical_categorical_columns=None,
     group_column=None,
     tabular_model_factory=None,
+    tabular_model_name="xgboost",
     fusion_alpha=0.5,
 ):
-    use_tabular_features = bool(clinical_continuous_columns or clinical_categorical_columns)
-    if use_tabular_features != (tabular_model_factory is not None):
-        raise ValueError(
-            "Tabular columns and tabular_model_factory must be provided together."
-        )
-    if not 0.0 <= fusion_alpha <= 1.0:
-        raise ValueError("fusion_alpha must be between 0 and 1.")
+    """Train MRI and optional tabular branches in leakage-safe CV folds.
+
+    Precomputed ``Imaging_Features.xlsx`` columns must be merged into ``df``
+    before this function is called. Pass those numeric columns through
+    ``clinical_continuous_columns``; despite the legacy parameter name, they
+    are treated as generic tabular predictors and are imputed/scaled using the
+    training portion of each fold only.
+    """
+    (
+        y,
+        continuous_columns,
+        categorical_columns,
+    ) = _validate_cv_inputs(
+        df=df,
+        num_folds=num_folds,
+        group_column=group_column,
+        continuous_columns=clinical_continuous_columns,
+        categorical_columns=clinical_categorical_columns,
+        tabular_model_factory=tabular_model_factory,
+        fusion_alpha=fusion_alpha,
+    )
+    use_tabular_features = bool(continuous_columns or categorical_columns)
+    num_classes = len(np.unique(y))
+    tabular_model_name = str(tabular_model_name).strip()
+    if use_tabular_features and not tabular_model_name:
+        raise ValueError("tabular_model_name cannot be empty.")
+
     if group_column is not None:
-        if group_column not in df.columns:
-            raise ValueError(f"group_column '{group_column}' is not present in the DataFrame.")
         skf = StratifiedGroupKFold(
             n_splits=num_folds,
             shuffle=True,
@@ -88,7 +229,6 @@ def run_5fold_cv(
     print(f"[CKPT] Checkpoint root: {checkpoints_root}", flush=True)
     print(f"[INPUT] Subtraction mode: {subtraction_mode}", flush=True)
 
-    y = df["label"].values
     groups = df[group_column].values if group_column is not None else None
     metrics_per_fold = []
     histories_per_fold = []
@@ -99,24 +239,30 @@ def run_5fold_cv(
 
         train_df = df.iloc[train_idx].reset_index(drop=True)
         val_df = df.iloc[val_idx].reset_index(drop=True)
+        _validate_fold_separation(
+            train_df,
+            val_df,
+            group_column=group_column,
+            expected_classes=np.arange(num_classes),
+        )
 
-        clinical_preprocessor = None
+        tabular_preprocessor = None
         tabular_model = None
         tabular_validation_probabilities = None
         if use_tabular_features:
-            clinical_preprocessor = ClinicalFeaturePreprocessor(
-                continuous_columns=clinical_continuous_columns or (),
-                categorical_columns=clinical_categorical_columns or (),
+            tabular_preprocessor = ClinicalFeaturePreprocessor(
+                continuous_columns=continuous_columns,
+                categorical_columns=categorical_columns,
             )
-            train_tabular = clinical_preprocessor.fit_transform(train_df)
-            validation_tabular = clinical_preprocessor.transform(val_df)
+            train_tabular = tabular_preprocessor.fit_transform(train_df)
+            validation_tabular = tabular_preprocessor.transform(val_df)
             tabular_model = tabular_model_factory()
             tabular_labels = train_df["label"].values
             tabular_sample_weights = compute_sample_weight(
                 class_weight="balanced",
                 y=tabular_labels,
             )
-            if int(df["label"].nunique()) == 2 and positive_boost != 1.0:
+            if num_classes == 2 and positive_boost != 1.0:
                 tabular_sample_weights = tabular_sample_weights.copy()
                 tabular_sample_weights[tabular_labels == 1] *= positive_boost
             tabular_model.fit(
@@ -127,11 +273,11 @@ def run_5fold_cv(
             tabular_validation_probabilities = aligned_predict_proba(
                 tabular_model,
                 validation_tabular,
-                num_classes=int(df["label"].nunique()),
+                num_classes=num_classes,
             )
             print(
-                f"[Fold {fold}] XGBoost input dimension: "
-                f"{clinical_preprocessor.output_dimension}",
+                f"[Fold {fold}] {tabular_model_name} input dimension: "
+                f"{tabular_preprocessor.output_dimension}",
                 flush=True,
             )
 
@@ -169,21 +315,25 @@ def run_5fold_cv(
         ckpt_dir = checkpoints_root / model_name / fold_version / "checkpoints"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-        if clinical_preprocessor is not None:
-            preprocessor_path = ckpt_dir / "clinical_preprocessor.joblib"
-            joblib.dump(clinical_preprocessor, preprocessor_path)
-            feature_names_path = ckpt_dir / "clinical_feature_names.txt"
+        if tabular_preprocessor is not None:
+            preprocessor_path = ckpt_dir / "tabular_preprocessor.joblib"
+            joblib.dump(tabular_preprocessor, preprocessor_path)
+            feature_names_path = ckpt_dir / "tabular_feature_names.txt"
             feature_names_path.write_text(
-                "\n".join(clinical_preprocessor.get_feature_names_out()) + "\n",
+                "\n".join(tabular_preprocessor.get_feature_names_out()) + "\n",
                 encoding="utf-8",
             )
             print(
                 f"[Fold {fold}] Saved tabular preprocessor: {preprocessor_path}",
                 flush=True,
             )
-            xgboost_path = ckpt_dir / "xgboost_model.joblib"
-            joblib.dump(tabular_model, xgboost_path)
-            print(f"[Fold {fold}] Saved XGBoost model: {xgboost_path}", flush=True)
+            tabular_model_path = ckpt_dir / f"{tabular_model_name}_model.joblib"
+            joblib.dump(tabular_model, tabular_model_path)
+            print(
+                f"[Fold {fold}] Saved {tabular_model_name} model: "
+                f"{tabular_model_path}",
+                flush=True,
+            )
 
         print(f"[Fold {fold}] Checkpoint dir: {ckpt_dir}", flush=True)
 
@@ -236,8 +386,15 @@ def run_5fold_cv(
             image_probabilities, validation_labels = _predict_image_probabilities(
                 model,
                 datamodule.val_dataloader(),
-                num_classes=int(df["label"].nunique()),
+                num_classes=num_classes,
             )
+            expected_validation_labels = val_df["label"].to_numpy(dtype=np.int64)
+            if not np.array_equal(validation_labels, expected_validation_labels):
+                raise RuntimeError(
+                    "MRI validation predictions are not aligned with the tabular "
+                    "rows. Keep the validation DataLoader deterministic and "
+                    "unshuffled before probability fusion."
+                )
             fused_probabilities = fuse_probabilities(
                 image_probabilities,
                 tabular_validation_probabilities,
@@ -254,7 +411,7 @@ def run_5fold_cv(
                 probability_metrics(
                     validation_labels,
                     tabular_validation_probabilities,
-                    prefix="xgboost",
+                    prefix=tabular_model_name,
                 )
             )
             fusion_metrics.update(
@@ -271,6 +428,7 @@ def run_5fold_cv(
                 tabular_validation_probabilities,
                 fused_probabilities,
                 ckpt_dir / "fusion_validation_predictions.csv",
+                tabular_model_name=tabular_model_name,
             )
             print(
                 f"[Fold {fold}] Decision fusion alpha (MRI weight): {fusion_alpha}",
@@ -321,7 +479,10 @@ def run_5fold_cv(
 
         # Store both
         fold_metrics["best_model_path"] = checkpoint_callback.best_model_path
-        fold_metrics["best_val_sensitivity_checkpoint_score"] = float(checkpoint_callback.best_model_score)
+        best_score = checkpoint_callback.best_model_score
+        fold_metrics["best_val_sensitivity_checkpoint_score"] = (
+            float(best_score) if best_score is not None else float("nan")
+        )
 
         # Add best checkpoint metrics
         # for k, v in best_metrics.items():
