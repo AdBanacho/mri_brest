@@ -19,6 +19,7 @@ from .clinical_preprocessing import ClinicalFeaturePreprocessor
 
 from .NiftiDataModule import NiftiDataModule
 from .NiftiDataset import NiftiDataset
+from .radiomics_cache import ensure_radiomics_cache
 
 __all__ = [
     "get_oncotype_score_for_series_as_serie_and_label_df",
@@ -34,5 +35,6 @@ __all__ = [
     "SUBTRACTION_MODES",
     "SUBTRACTION_NONE",
     "get_input_channels",
-    "ClinicalFeaturePreprocessor"
+    "ClinicalFeaturePreprocessor",
+    "ensure_radiomics_cache"
 ]

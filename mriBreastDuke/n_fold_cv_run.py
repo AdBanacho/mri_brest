@@ -192,7 +192,7 @@ def run_5fold_cv(
             filename="best-{epoch:02d}-{val_sensitivity:.4f}-{val_auc_roc:.4f}",
             monitor="val_sensitivity",
             mode="max",
-            save_top_k=3,
+            save_top_k=1,
             save_last=True,
             verbose=True,
         )
