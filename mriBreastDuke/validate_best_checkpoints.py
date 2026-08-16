@@ -6,7 +6,7 @@ import re
 import os
 from typing import List
 
-from monai.networks.nets import DenseNet121
+from monai.networks.nets import DenseNet121, resnet18
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import confusion_matrix, roc_curve, auc
 from sklearn.preprocessing import label_binarize
@@ -21,6 +21,11 @@ from mriBreastDuke.dataLoaders import (
     NiftiDataModule,
     get_oncotype_score_for_series_as_studyId_and_label_df,
 )
+from mriBreastDuke.dataLoaders.subtraction import (
+    SUBTRACTION_MODES,
+    SUBTRACTION_NONE,
+    get_input_channels,
+)
 
 
 
@@ -29,7 +34,13 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Load best checkpoints from each CV fold and run validation."
     )
-    parser.add_argument("--model", type=int, default=0, help="0=FCN, 1=DenseNet")
+    parser.add_argument(
+        "--model",
+        type=int,
+        choices=(0, 1, 2),
+        default=0,
+        help="0=FCN, 1=DenseNet121, 2=ResNet18",
+    )
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--sensitivity_lambda", type=float, default=None)
     parser.add_argument("--positive_boost", type=float, default=None)
@@ -39,6 +50,12 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--is_binary_classification", type=bool, default=False)
+    parser.add_argument(
+        "--subtraction_mode",
+        choices=SUBTRACTION_MODES,
+        default=SUBTRACTION_NONE,
+        help="Must match the subtraction mode used to train the checkpoint.",
+    )
     parser.add_argument(
         "--checkpoint_root",
         type=str,
@@ -413,6 +430,8 @@ def run_saved_checkpoint_validation(
     charts_dir,
     num_classes,
     top_k_checkpoints=3,
+    subtraction_mode=SUBTRACTION_NONE,
+    positive_boost=1.0,
 ):
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=SEED)
 
@@ -429,6 +448,7 @@ def run_saved_checkpoint_validation(
         class_weights = _compute_balanced_class_weights(
             train_df["label"].values,
             num_classes=num_classes,
+            positive_boost=positive_boost,
         )
 
         datamodule = NiftiDataModule(
@@ -438,6 +458,7 @@ def run_saved_checkpoint_validation(
             image_root=NIFTI_PATH,
             batch_size=batch_size,
             num_workers=num_workers,
+            subtraction_mode=subtraction_mode,
         )
 
         checkpoint_dir = resolve_fold_checkpoint_dir(checkpoint_root, model_name, fold)
@@ -541,57 +562,6 @@ def run_saved_checkpoint_validation(
                 else:
                     print(f"  {k}: {v}")
 
-        y_true = []
-        y_pred = []
-        y_prob = []
-        device = model.device
-
-        with torch.no_grad():
-            for x, labels in datamodule.val_dataloader():
-                x = x.to(device)
-                logits = model(x)
-
-                if num_classes == 2 and (logits.ndim == 1 or logits.shape[1] == 1):
-                    # True binary model: one output logit.
-                    positive_probs = torch.sigmoid(logits.view(-1))
-                    negative_probs = 1.0 - positive_probs
-
-                    probs = torch.stack([negative_probs, positive_probs], dim=1).cpu().numpy()
-                    preds = (positive_probs >= 0.5).long().cpu().numpy().tolist()
-
-                else:
-                    # Multiclass model, or binary model with two logits.
-                    probs = torch.softmax(logits, dim=1).cpu().numpy()
-                    preds = np.argmax(probs, axis=1).tolist()
-
-                y_prob.extend(probs.tolist())
-                y_pred.extend(preds)
-                y_true.extend(labels.cpu().numpy().tolist())
-
-        fold_chart_dir = Path(charts_dir) / model_name / f"fold_{fold}"
-        fold_chart_dir.mkdir(parents=True, exist_ok=True)
-
-        cm_path = fold_chart_dir / "confusion_matrix.png"
-        roc_path = fold_chart_dir / "roc_curve.png"
-        save_confusion_matrix_chart(y_true, y_pred, cm_path)
-        save_roc_curve_chart(y_true, np.array(y_prob), num_classes, roc_path)
-
-        serialized_metrics = {
-            k: float(v) if isinstance(v, Number) else v
-            for k, v in metrics.items()
-        }
-        serialized_metrics["checkpoint_path"] = str(checkpoint_path)
-        serialized_metrics["confusion_matrix_path"] = str(cm_path)
-        serialized_metrics["roc_curve_path"] = str(roc_path)
-        fold_metrics.append(serialized_metrics)
-
-        print(f"Checkpoint: {checkpoint_path}")
-        for k, v in serialized_metrics.items():
-            if isinstance(v, float):
-                print(f"  {k}: {v:.4f}")
-            else:
-                print(f"  {k}: {v}")
-
     save_aggregate_fold_charts(
         fold_predictions=fold_predictions_rank_1,
         charts_dir=charts_dir,
@@ -601,12 +571,15 @@ def run_saved_checkpoint_validation(
 
     return fold_metrics
 
-def _compute_balanced_class_weights(labels, num_classes):
+def _compute_balanced_class_weights(labels, num_classes, positive_boost=1.0):
     label_tensor = torch.as_tensor(labels, dtype=torch.long)
     class_counts = torch.bincount(label_tensor, minlength=num_classes)
 
     total = class_counts.sum().float()
     weights = total / (num_classes * class_counts.float().clamp_min(1.0))
+
+    if num_classes == 2:
+        weights[1] *= positive_boost
 
     return weights
 
@@ -648,6 +621,9 @@ def build_model_name(base_name, args):
 
     parts.append(f"bs_{args.batch_size}")
 
+    if args.subtraction_mode != SUBTRACTION_NONE:
+        parts.append(f"sub_{args.subtraction_mode}")
+
     return "_".join(parts)
 
 
@@ -656,14 +632,24 @@ def main():
     args = parse_args()
     df = get_oncotype_score_for_series_as_studyId_and_label_df(args.is_binary_classification)
     num_classes = len(set(df.label))
+    input_channels = get_input_channels(args.subtraction_mode)
+    validation_lr = args.lr if args.lr is not None else 1e-3
+    validation_sensitivity_lambda = (
+        args.sensitivity_lambda if args.sensitivity_lambda is not None else 0.3
+    )
 
     models = [
         (
             "FCN",
             lambda class_weights=None: NiftiClassifier(
-                Simple3DFCN(num_classes=num_classes),
+                Simple3DFCN(
+                    num_classes=num_classes,
+                    in_channels=input_channels,
+                ),
                 num_classes,
+                lr=validation_lr,
                 class_weights=class_weights,
+                sensitivity_lambda=validation_sensitivity_lambda,
             ),
         ),
         (
@@ -671,11 +657,27 @@ def main():
             lambda class_weights=None: NiftiClassifier(
                 DenseNet121(
                     spatial_dims=3,
-                    in_channels=5,
+                    in_channels=input_channels,
                     out_channels=num_classes,
                 ),
                 num_classes,
+                lr=validation_lr,
                 class_weights=class_weights,
+                sensitivity_lambda=validation_sensitivity_lambda,
+            ),
+        ),
+        (
+            "ResNet18",
+            lambda class_weights=None: NiftiClassifier(
+                resnet18(
+                    spatial_dims=3,
+                    n_input_channels=input_channels,
+                    num_classes=num_classes,
+                ),
+                num_classes,
+                lr=validation_lr,
+                class_weights=class_weights,
+                sensitivity_lambda=validation_sensitivity_lambda,
             ),
         ),
     ]
@@ -697,6 +699,10 @@ def main():
         charts_dir=args.charts_dir,
         num_classes=num_classes,
         top_k_checkpoints=args.top_k_checkpoints,
+        subtraction_mode=args.subtraction_mode,
+        positive_boost=(
+            args.positive_boost if args.positive_boost is not None else 1.0
+        ),
     )
 
     print_summary(metrics_per_fold)

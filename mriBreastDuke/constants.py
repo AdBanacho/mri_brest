@@ -24,6 +24,7 @@ IMAGES_PATH = os.path.join(STORAGE_PATH, "images")
 DCM_PATH = os.path.join(STORAGE_PATH, "tciaDownload")
 NIFTI_PATH = os.path.join(STORAGE_PATH, "tciaNifti")
 PREPARED_TO_TRAIN_PATH = os.path.join(IMAGES_HELIOS_PATH, "preparedToTrain")
+SUBTRACTION_PATH = os.path.join(IMAGES_HELIOS_PATH, "preparedToTrainSubtraction")
 
 DUKE_CANCER_MRI_COLLECTION = "Duke-Breast-Cancer-MRI"
 

@@ -1,7 +1,9 @@
 from pathlib import Path
 import matplotlib.pyplot as plt
 
-from sklearn.model_selection import StratifiedKFold
+import joblib
+from sklearn.utils.class_weight import compute_sample_weight
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 import pytorch_lightning as pl
@@ -9,9 +11,15 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 
-from mriBreastDuke.classificators import DebugBatchShapeCallback
 from mriBreastDuke.constants import SEED, LIGHTING_LOGS, NIFTI_PATH, CHECKPOINTS_PATH
-from mriBreastDuke.dataLoaders import NiftiDataModule
+from mriBreastDuke.dataLoaders import ClinicalFeaturePreprocessor, NiftiDataModule, SUBTRACTION_NONE
+from mriBreastDuke.classificators import (
+    aligned_predict_proba,
+    fuse_probabilities,
+    probability_metrics,
+    save_fusion_predictions,
+    DebugBatchShapeCallback
+)
 
 def _resolve_output_dir(path_like):
     path = Path(path_like)
@@ -19,6 +27,25 @@ def _resolve_output_dir(path_like):
         path = Path.cwd() / path
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
+
+
+def _predict_image_probabilities(model, dataloader, num_classes):
+    probabilities = []
+    labels = []
+    model.eval()
+    device = model.device
+    with torch.no_grad():
+        for images, batch_labels in dataloader:
+            logits = model(images.to(device))
+            if num_classes == 2 and (logits.ndim == 1 or logits.shape[1] == 1):
+                positive = torch.sigmoid(logits.view(-1))
+                batch_probabilities = torch.stack((1.0 - positive, positive), dim=1)
+            else:
+                batch_probabilities = torch.softmax(logits, dim=1)
+            probabilities.append(batch_probabilities.cpu().numpy())
+            labels.append(batch_labels.numpy())
+
+    return np.concatenate(probabilities), np.concatenate(labels)
 
 def run_5fold_cv(
     df,
@@ -29,24 +56,84 @@ def run_5fold_cv(
     batch_size=8,
     num_workers=2,
     positive_boost=1.0,
+    subtraction_mode=SUBTRACTION_NONE,
+    clinical_continuous_columns=None,
+    clinical_categorical_columns=None,
+    group_column=None,
+    tabular_model_factory=None,
+    fusion_alpha=0.5,
 ):
-    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=SEED)
+    use_tabular_features = bool(clinical_continuous_columns or clinical_categorical_columns)
+    if use_tabular_features != (tabular_model_factory is not None):
+        raise ValueError(
+            "Tabular columns and tabular_model_factory must be provided together."
+        )
+    if not 0.0 <= fusion_alpha <= 1.0:
+        raise ValueError("fusion_alpha must be between 0 and 1.")
+    if group_column is not None:
+        if group_column not in df.columns:
+            raise ValueError(f"group_column '{group_column}' is not present in the DataFrame.")
+        skf = StratifiedGroupKFold(
+            n_splits=num_folds,
+            shuffle=True,
+            random_state=SEED,
+        )
+    else:
+        skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=SEED)
 
     logs_root = _resolve_output_dir(LIGHTING_LOGS)
     checkpoints_root = _resolve_output_dir(CHECKPOINTS_PATH)
 
     print(f"[LOGS] TensorBoard root: {logs_root}", flush=True)
     print(f"[CKPT] Checkpoint root: {checkpoints_root}", flush=True)
+    print(f"[INPUT] Subtraction mode: {subtraction_mode}", flush=True)
 
     y = df["label"].values
+    groups = df[group_column].values if group_column is not None else None
     metrics_per_fold = []
     histories_per_fold = []
 
-    for fold, (train_idx, val_idx) in enumerate(skf.split(df, y), start=1):
+    split_iterator = skf.split(df, y, groups) if groups is not None else skf.split(df, y)
+    for fold, (train_idx, val_idx) in enumerate(split_iterator, start=1):
         print(f"\n========== Fold {fold}/{num_folds} ==========")
 
         train_df = df.iloc[train_idx].reset_index(drop=True)
         val_df = df.iloc[val_idx].reset_index(drop=True)
+
+        clinical_preprocessor = None
+        tabular_model = None
+        tabular_validation_probabilities = None
+        if use_tabular_features:
+            clinical_preprocessor = ClinicalFeaturePreprocessor(
+                continuous_columns=clinical_continuous_columns or (),
+                categorical_columns=clinical_categorical_columns or (),
+            )
+            train_tabular = clinical_preprocessor.fit_transform(train_df)
+            validation_tabular = clinical_preprocessor.transform(val_df)
+            tabular_model = tabular_model_factory()
+            tabular_labels = train_df["label"].values
+            tabular_sample_weights = compute_sample_weight(
+                class_weight="balanced",
+                y=tabular_labels,
+            )
+            if int(df["label"].nunique()) == 2 and positive_boost != 1.0:
+                tabular_sample_weights = tabular_sample_weights.copy()
+                tabular_sample_weights[tabular_labels == 1] *= positive_boost
+            tabular_model.fit(
+                train_tabular,
+                tabular_labels,
+                sample_weight=tabular_sample_weights,
+            )
+            tabular_validation_probabilities = aligned_predict_proba(
+                tabular_model,
+                validation_tabular,
+                num_classes=int(df["label"].nunique()),
+            )
+            print(
+                f"[Fold {fold}] XGBoost input dimension: "
+                f"{clinical_preprocessor.output_dimension}",
+                flush=True,
+            )
 
         datamodule = NiftiDataModule(
             train_df=train_df,
@@ -55,12 +142,13 @@ def run_5fold_cv(
             image_root=NIFTI_PATH,
             batch_size=batch_size,
             num_workers=num_workers,
+            subtraction_mode=subtraction_mode,
         )
 
         class_weights = _compute_balanced_class_weights(
-    train_df["label"].values,
-    positive_boost=positive_boost,
-)
+            train_df["label"].values,
+            positive_boost=positive_boost,
+        )
         model = make_model(class_weights=class_weights)
 
         fold_version = f"fold_{fold}"
@@ -80,6 +168,22 @@ def run_5fold_cv(
         # Directory for this fold's checkpoints
         ckpt_dir = checkpoints_root / model_name / fold_version / "checkpoints"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+        if clinical_preprocessor is not None:
+            preprocessor_path = ckpt_dir / "clinical_preprocessor.joblib"
+            joblib.dump(clinical_preprocessor, preprocessor_path)
+            feature_names_path = ckpt_dir / "clinical_feature_names.txt"
+            feature_names_path.write_text(
+                "\n".join(clinical_preprocessor.get_feature_names_out()) + "\n",
+                encoding="utf-8",
+            )
+            print(
+                f"[Fold {fold}] Saved tabular preprocessor: {preprocessor_path}",
+                flush=True,
+            )
+            xgboost_path = ckpt_dir / "xgboost_model.joblib"
+            joblib.dump(tabular_model, xgboost_path)
+            print(f"[Fold {fold}] Saved XGBoost model: {xgboost_path}", flush=True)
 
         print(f"[Fold {fold}] Checkpoint dir: {ckpt_dir}", flush=True)
 
@@ -119,6 +223,60 @@ def run_5fold_cv(
         if logger is not None and hasattr(logger, "experiment"):
             logger.experiment.flush()
 
+        fusion_metrics = {}
+        if tabular_model is not None:
+            if checkpoint_callback.best_model_path:
+                checkpoint = torch.load(
+                    checkpoint_callback.best_model_path,
+                    map_location=model.device,
+                    weights_only=False,
+                )
+                model.load_state_dict(checkpoint["state_dict"])
+
+            image_probabilities, validation_labels = _predict_image_probabilities(
+                model,
+                datamodule.val_dataloader(),
+                num_classes=int(df["label"].nunique()),
+            )
+            fused_probabilities = fuse_probabilities(
+                image_probabilities,
+                tabular_validation_probabilities,
+                alpha=fusion_alpha,
+            )
+            fusion_metrics.update(
+                probability_metrics(
+                    validation_labels,
+                    image_probabilities,
+                    prefix="image",
+                )
+            )
+            fusion_metrics.update(
+                probability_metrics(
+                    validation_labels,
+                    tabular_validation_probabilities,
+                    prefix="xgboost",
+                )
+            )
+            fusion_metrics.update(
+                probability_metrics(
+                    validation_labels,
+                    fused_probabilities,
+                    prefix="fusion",
+                )
+            )
+            save_fusion_predictions(
+                val_df,
+                validation_labels,
+                image_probabilities,
+                tabular_validation_probabilities,
+                fused_probabilities,
+                ckpt_dir / "fusion_validation_predictions.csv",
+            )
+            print(
+                f"[Fold {fold}] Decision fusion alpha (MRI weight): {fusion_alpha}",
+                flush=True,
+            )
+
         fold_history = {
             "fold": fold,
 
@@ -139,6 +297,7 @@ def run_5fold_cv(
         fold_metrics = {
             k: float(v) for k, v in trainer.callback_metrics.items() if hasattr(v, "item")
         }
+        fold_metrics.update(fusion_metrics)
 
         # Evaluate BEST checkpoint
         # best_metrics = trainer.validate(
