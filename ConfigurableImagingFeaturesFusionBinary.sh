@@ -12,15 +12,16 @@
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 
+set -euo pipefail
+
 ml ML-bundle
 
 sleep $(( (SLURM_ARRAY_TASK_ID % 8) * 30 ))
 
 cd /net/home/plgrid/plgabanacho/mri_brest
-mkdir -p logs
 
 pip install -e .
-pip install --no-cache-dir xgboost pytorch_lightning lightning==2.5.6 torchmetrics==1.8.2 monai pandas 'scikit-learn>=1.7,<2' nibabel filelock openpyxl tensorboard matplotlib
+pip install --no-cache-dir xgboost pytorch-lightning==2.5.6 torchmetrics==1.8.2 monai pandas 'scikit-learn>=1.7,<2' nibabel filelock openpyxl tensorboard matplotlib
 
 MRI_MODELS=(densenet121 resnet18)
 SUBTRACTIONS=(none post_minus_pre)

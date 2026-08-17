@@ -243,7 +243,11 @@ def get_oncotype_score_for_series_as_studyId_and_label_df(isBinary: bool):
     data = get_oncotype_score_for_series(isBinary)
 
     series_count = data.groupby("studyId")["seriesId"].nunique()
-    valid_study_ids = series_count.loc[series_count != 4].index
+    # All configured workflows, including subtraction, share this study table.
+    # Keep a common cohort that can form at least one subtraction. Studies
+    # with more series remain valid because aggregation deterministically
+    # selects the first MAX_SERIES_PER_STUDY entries below.
+    valid_study_ids = series_count.loc[series_count >= 2].index
     filtered = data[data["studyId"].isin(valid_study_ids)]
 
     return (

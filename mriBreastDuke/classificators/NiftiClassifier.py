@@ -63,7 +63,7 @@ class NiftiClassifier(pl.LightningModule):
         self.val_roc = MulticlassROC(num_classes=num_classes)
         self.val_sensitivity = MulticlassRecall(
             num_classes=num_classes,
-            average="macro",
+            average=None,
         )
         # Loss history for charts
         self.train_loss_history = []
@@ -296,7 +296,10 @@ class NiftiClassifier(pl.LightningModule):
             self.val_epoch_soft_sensitivities.clear()
         # --- Scalars ---
         auc = self.val_auc.compute()
-        sensitivity = self.val_sensitivity.compute()
+        # Oncotype classification treats class 1 as positive.  Checkpointing
+        # therefore uses its recall rather than macro recall over both classes.
+        per_class_recall = self.val_sensitivity.compute()
+        sensitivity = per_class_recall[1]
 
         self.log("val_auc_roc", auc, prog_bar=True, on_step=False, on_epoch=True)
         self.log("val_sensitivity", sensitivity, prog_bar=True, on_step=False, on_epoch=True)

@@ -1,3 +1,5 @@
+from functools import partial
+
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
@@ -5,7 +7,7 @@ from .NiftiDataset import NiftiDataset
 from .pad_collate import pad_collate
 from mriBreastDuke.constants import NIFTI_PATH
 
-from mriBreastDuke.dataLoaders.subtraction import SUBTRACTION_NONE
+from mriBreastDuke.dataLoaders.subtraction import SUBTRACTION_NONE, get_input_channels
 
 class NiftiDataModule(pl.LightningDataModule):
     def __init__(self, train_df, val_df, target_size=None, image_root=NIFTI_PATH, batch_size=2, num_workers=4, subtraction_mode=SUBTRACTION_NONE):
@@ -17,6 +19,7 @@ class NiftiDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.target_size = target_size
         self.subtraction_mode = subtraction_mode
+        self.input_channels = get_input_channels(subtraction_mode)
 
     def setup(self, stage=None):
         self.train_ds = self.setup_dataset(self.train_df, "train")
@@ -38,7 +41,7 @@ class NiftiDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
-            collate_fn=pad_collate,
+            collate_fn=partial(pad_collate, max_series=self.input_channels),
         )
 
     def val_dataloader(self):
@@ -47,5 +50,5 @@ class NiftiDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
-            collate_fn=pad_collate,
+            collate_fn=partial(pad_collate, max_series=self.input_channels),
         )

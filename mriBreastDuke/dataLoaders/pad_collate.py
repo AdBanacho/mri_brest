@@ -25,6 +25,10 @@ def pad_collate(batch, max_series=5):
 
         # Pad series dimension (K) to max_series
         k, c, d, h, w = v.shape
+        if k > max_series:
+            raise ValueError(
+                f"Volume contains {k} series, more than max_series={max_series}."
+            )
         if k < max_series:
             pad_k = max_series - k
             pad_tensor = torch.zeros(
@@ -56,10 +60,9 @@ def pad_collate(batch, max_series=5):
         padded_vols.append(v_padded)
 
     # Stack into batch
-    vols_tensor = torch.stack(padded_vols, dim=0)   # (B, 5, 1, Dmax, Hmax, Wmax)
+    vols_tensor = torch.stack(padded_vols, dim=0)
     labels_tensor = torch.stack(labels, dim=0)
 
-    vols_tensor = vols_tensor.squeeze(2) # (B, 5, D,H,W)
+    vols_tensor = vols_tensor.squeeze(2) # (B, max_series, D, H, W)
 
     return vols_tensor, labels_tensor
-

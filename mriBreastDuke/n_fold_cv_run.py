@@ -373,16 +373,20 @@ def run_5fold_cv(
         if logger is not None and hasattr(logger, "experiment"):
             logger.experiment.flush()
 
+        if not checkpoint_callback.best_model_path:
+            raise RuntimeError(f"Fold {fold} did not produce a best checkpoint.")
+
+        # Re-evaluate the selected checkpoint so the reported MRI metrics and
+        # fusion predictions refer to exactly the same model weights.
+        best_metrics = trainer.validate(
+            model=model,
+            datamodule=datamodule,
+            ckpt_path=checkpoint_callback.best_model_path,
+            verbose=False,
+        )[0]
+
         fusion_metrics = {}
         if tabular_model is not None:
-            if checkpoint_callback.best_model_path:
-                checkpoint = torch.load(
-                    checkpoint_callback.best_model_path,
-                    map_location=model.device,
-                    weights_only=False,
-                )
-                model.load_state_dict(checkpoint["state_dict"])
-
             image_probabilities, validation_labels = _predict_image_probabilities(
                 model,
                 datamodule.val_dataloader(),
@@ -451,19 +455,11 @@ def run_5fold_cv(
 
         histories_per_fold.append(fold_history)
 
-        # Metrics from last epoch (already present)
         fold_metrics = {
-            k: float(v) for k, v in trainer.callback_metrics.items() if hasattr(v, "item")
+            k: float(v) for k, v in best_metrics.items()
+            if isinstance(v, (int, float)) or hasattr(v, "item")
         }
         fold_metrics.update(fusion_metrics)
-
-        # Evaluate BEST checkpoint
-        # best_metrics = trainer.validate(
-        #     model=make_model(class_weights=class_weights),
-        #     datamodule=datamodule,
-        #     ckpt_path=checkpoint_callback.best_model_path,
-        #     verbose=False
-        # )[0]
 
         # Final flush/save for this fold.
         if logger is not None:
@@ -483,11 +479,6 @@ def run_5fold_cv(
         fold_metrics["best_val_sensitivity_checkpoint_score"] = (
             float(best_score) if best_score is not None else float("nan")
         )
-
-        # Add best checkpoint metrics
-        # for k, v in best_metrics.items():
-        #     if isinstance(v, (int, float)):
-        #         fold_metrics[f"best_{k}"] = float(v)
 
         print(f"\nFold {fold} metrics:")
         for k, v in fold_metrics.items():

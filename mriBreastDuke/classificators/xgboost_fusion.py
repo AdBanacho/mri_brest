@@ -56,13 +56,23 @@ def probability_metrics(labels, probabilities, prefix):
     labels = np.asarray(labels)
     probabilities = np.asarray(probabilities, dtype=np.float64)
     predictions = np.argmax(probabilities, axis=1)
+    sensitivity_options = (
+        {"average": "binary", "pos_label": 1}
+        if probabilities.shape[1] == 2
+        else {"average": "macro"}
+    )
     metrics = {
         f"{prefix}_accuracy": float(accuracy_score(labels, predictions)),
         f"{prefix}_balanced_accuracy": float(
             balanced_accuracy_score(labels, predictions)
         ),
         f"{prefix}_sensitivity": float(
-            recall_score(labels, predictions, average="macro", zero_division=0)
+            recall_score(
+                labels,
+                predictions,
+                zero_division=0,
+                **sensitivity_options,
+            )
         ),
     }
     try:
@@ -89,6 +99,7 @@ def save_fusion_predictions(
     xgboost_probabilities,
     fused_probabilities,
     output_path,
+    tabular_model_name="xgboost",
 ):
     """Save identifiers, branch probabilities, and fused predictions to CSV."""
     identifiers = {}
@@ -96,12 +107,20 @@ def save_fusion_predictions(
         if column in validation_data.columns:
             identifiers[column] = validation_data[column].to_numpy()
 
+    tabular_model_name = str(tabular_model_name).strip()
+    if not tabular_model_name:
+        raise ValueError("tabular_model_name cannot be empty.")
+
     output = pd.DataFrame({**identifiers, "label": labels})
     for class_index in range(fused_probabilities.shape[1]):
         output[f"image_probability_{class_index}"] = image_probabilities[:, class_index]
-        output[f"xgboost_probability_{class_index}"] = xgboost_probabilities[:, class_index]
+        output[f"{tabular_model_name}_probability_{class_index}"] = (
+            xgboost_probabilities[:, class_index]
+        )
         output[f"fusion_probability_{class_index}"] = fused_probabilities[:, class_index]
     output["image_prediction"] = np.argmax(image_probabilities, axis=1)
-    output["xgboost_prediction"] = np.argmax(xgboost_probabilities, axis=1)
+    output[f"{tabular_model_name}_prediction"] = np.argmax(
+        xgboost_probabilities, axis=1
+    )
     output["fusion_prediction"] = np.argmax(fused_probabilities, axis=1)
     output.to_csv(output_path, index=False)
