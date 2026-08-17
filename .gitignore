@@ -1,7 +1,7 @@
 .env
 /.idea
 /mriBreastDuke/.idea
-/mriBreastDuke/features
+/mriBreastDuke/features/Duke*
 /mriBreastDuke/images
 /mriBreastDuke/lightning_logs
 /mriBreastDuke/venv
