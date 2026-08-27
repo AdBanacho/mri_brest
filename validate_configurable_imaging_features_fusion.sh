@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=imaging_features_fusion
+#SBATCH --job-name=validate_imaging_features_fusion
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
@@ -21,7 +21,7 @@ sleep $(( (SLURM_ARRAY_TASK_ID % 8) * 30 ))
 cd /net/home/plgrid/plgabanacho/mri_brest
 
 pip install -e .
-pip install --no-cache-dir xgboost pytorch-lightning==2.5.6 torchmetrics==1.8.2 monai pandas 'scikit-learn>=1.7,<2' nibabel filelock openpyxl tensorboard matplotlib
+pip install --no-cache-dir xgboost pytorch-lightning==2.5.6 torchmetrics==1.8.2 monai pandas 'scikit-learn>=1.7,<2' nibabel filelock openpyxl tensorboard matplotlib joblib
 
 MRI_MODELS=(densenet121 resnet18)
 SUBTRACTIONS=(none post_minus_pre)
@@ -32,7 +32,10 @@ POS_BOOSTS=(1.0 2.0)
 SENS_LAMBDAS=(0.3)
 LRS=(1e-4)
 
+FUSION_ALPHA=${FUSION_ALPHA:-0.5}
 IMAGING_FEATURES_FILE=${IMAGING_FEATURES_FILE:-/net/home/plgrid/plgabanacho/mri_brest/mriBreastDuke/features/Imaging_Features.xlsx}
+CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-/net/scratch/hscra/plgrid/plgabanacho/check_points}
+VALIDATION_OUTPUT_DIR=${VALIDATION_OUTPUT_DIR:-validation_charts}
 
 N_MRI=${#MRI_MODELS[@]}
 N_SUB=${#SUBTRACTIONS[@]}
@@ -79,7 +82,7 @@ if [[ "$FEATURE_GROUPS_CSV" != "clinical" ]]; then
 fi
 
 echo "========================================"
-echo "Imaging_Features.xlsx fusion experiment"
+echo "Validate Imaging_Features.xlsx fusion experiment"
 echo "Task: $SLURM_ARRAY_TASK_ID / $((TOTAL_CONFIGS - 1))"
 echo "MRI model: $MRI_MODEL"
 echo "Subtraction: $SUBTRACTION"
@@ -89,18 +92,23 @@ echo "Batch size: $BATCH_SIZE"
 echo "Positive boost: $POSITIVE_BOOST"
 echo "Sensitivity lambda: $SENSITIVITY_LAMBDA"
 echo "MRI learning rate: $LEARNING_RATE"
+echo "Fusion alpha: $FUSION_ALPHA"
+echo "Checkpoint root: $CHECKPOINT_ROOT"
+echo "Validation output: $VALIDATION_OUTPUT_DIR"
 echo "========================================"
 
-python -m mriBreastDuke.configurable_imaging_features_fusion_workflow \
+python -m mriBreastDuke.validate_configurable_imaging_features_fusion \
     --mri_model "$MRI_MODEL" \
     --subtraction_mode "$SUBTRACTION" \
     --feature_groups "${FEATURE_GROUP_ARGS[@]}" \
     --feature_model "$FEATURE_MODEL" \
-    --epoch 30 \
     --num_folds 5 \
     --batch_size "$BATCH_SIZE" \
     --num_workers 4 \
     --positive_boost "$POSITIVE_BOOST" \
     --sensitivity_lambda "$SENSITIVITY_LAMBDA" \
     --lr "$LEARNING_RATE" \
+    --fusion_alpha "$FUSION_ALPHA" \
+    --checkpoint_root "$CHECKPOINT_ROOT" \
+    --output_dir "$VALIDATION_OUTPUT_DIR" \
     "${IMAGING_ARGS[@]}"
