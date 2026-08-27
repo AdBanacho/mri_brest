@@ -103,5 +103,4 @@ python -m mriBreastDuke.configurable_imaging_features_fusion_workflow \
     --positive_boost "$POSITIVE_BOOST" \
     --sensitivity_lambda "$SENSITIVITY_LAMBDA" \
     --lr "$LEARNING_RATE" \
-    --fusion_alpha 0.5 \
     "${IMAGING_ARGS[@]}"
