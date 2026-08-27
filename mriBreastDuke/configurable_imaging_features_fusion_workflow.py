@@ -1,4 +1,4 @@
-"""Configurable MRI + Duke Imaging_Features.xlsx decision fusion."""
+"""Train configurable MRI and tabular branches for later decision fusion."""
 
 import argparse
 import math
@@ -33,7 +33,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Train patient-grouped MRI and precomputed imaging-feature models "
-            "and combine their validation probabilities."
+            "and save fold artifacts for post-training fusion validation."
         )
     )
     parser.add_argument("--mri_model", choices=MRI_MODELS, default="densenet121")
@@ -69,8 +69,6 @@ def parse_args():
     parser.add_argument("--positive_boost", type=float, default=1.0)
     parser.add_argument("--sensitivity_lambda", type=float, default=0.3)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--fusion_alpha", type=float, default=0.5)
-
     parser.add_argument("--xgb_n_estimators", type=int, default=300)
     parser.add_argument("--xgb_max_depth", type=int, default=3)
     parser.add_argument("--xgb_learning_rate", type=float, default=0.03)
@@ -188,8 +186,18 @@ def prepare_studies_and_features(args):
     return studies, continuous_columns, categorical_columns, selected_groups
 
 
+def build_experiment_name(args, selected_groups):
+    """Return the shared checkpoint/log directory name for one grid entry."""
+    return (
+        f"ImagingFeaturesFusion_{args.mri_model}_{args.subtraction_mode}_"
+        f"{'-'.join(selected_groups)}_{args.feature_model}_lr{args.lr:.0e}_"
+        f"sens{args.sensitivity_lambda:g}_boost{args.positive_boost:g}_"
+        f"bs{args.batch_size}"
+    )
+
+
 def summarize_metrics(metrics_per_fold):
-    print("\n========== Imaging-features fusion CV summary ==========")
+    print("\n========== Imaging-features training CV summary ==========")
     metric_names = sorted(
         {name for fold_metrics in metrics_per_fold for name in fold_metrics}
     )
@@ -216,9 +224,6 @@ def summarize_metrics(metrics_per_fold):
 
 def main():
     args = parse_args()
-    if not 0.0 <= args.fusion_alpha <= 1.0:
-        raise ValueError("--fusion_alpha must be between 0 and 1.")
-
     studies, continuous, categorical, selected_groups = (
         prepare_studies_and_features(args)
     )
@@ -242,12 +247,7 @@ def main():
     def feature_model_factory():
         return make_feature_model(args, num_classes)
 
-    experiment_name = (
-        f"ImagingFeaturesFusion_{args.mri_model}_{args.subtraction_mode}_"
-        f"{'-'.join(selected_groups)}_{args.feature_model}_lr{args.lr:.0e}_"
-        f"sens{args.sensitivity_lambda:g}_boost{args.positive_boost:g}_"
-        f"bs{args.batch_size}"
-    )
+    experiment_name = build_experiment_name(args, selected_groups)
     metrics = run_5fold_cv(
         df=studies,
         model_name=experiment_name,
@@ -263,7 +263,6 @@ def main():
         group_column="patientId",
         tabular_model_factory=feature_model_factory,
         tabular_model_name=args.feature_model,
-        fusion_alpha=args.fusion_alpha,
     )
     summarize_metrics(metrics)
 
