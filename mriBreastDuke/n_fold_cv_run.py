@@ -1,3 +1,4 @@
+import gc
 from pathlib import Path
 import matplotlib.pyplot as plt
 
@@ -34,7 +35,7 @@ def _predict_image_probabilities(model, dataloader, num_classes):
     labels = []
     model.eval()
     device = model.device
-    with torch.no_grad():
+    with torch.inference_mode():
         for images, batch_labels in dataloader:
             logits = model(images.to(device))
             if num_classes == 2 and (logits.ndim == 1 or logits.shape[1] == 1):
@@ -43,9 +44,73 @@ def _predict_image_probabilities(model, dataloader, num_classes):
             else:
                 batch_probabilities = torch.softmax(logits, dim=1)
             probabilities.append(batch_probabilities.cpu().numpy())
-            labels.append(batch_labels.numpy())
+            labels.append(batch_labels.detach().cpu().numpy())
 
     return np.concatenate(probabilities), np.concatenate(labels)
+
+
+def _scalar_metrics(metrics):
+    """Detach scalar trainer metrics so they cannot retain device memory."""
+    detached = {}
+    for name, value in metrics.items():
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                continue
+            detached[name] = float(value.detach().cpu().item())
+        elif isinstance(value, (int, float, np.number)):
+            detached[name] = float(value)
+    return detached
+
+
+class _BestValidationMetrics(pl.Callback):
+    """Keep the metrics from the epoch selected by ModelCheckpoint.
+
+    This avoids running a second full validation loop after ``Trainer.fit``.
+    The callback deliberately ignores Lightning's sanity-validation pass.
+    """
+
+    def __init__(self, monitor, mode="max"):
+        super().__init__()
+        if mode not in {"min", "max"}:
+            raise ValueError("mode must be either 'min' or 'max'.")
+        self.monitor = monitor
+        self.mode = mode
+        self.best_score = None
+        self.best_metrics = None
+
+    def on_validation_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+
+        metrics = _scalar_metrics(trainer.callback_metrics)
+        current = metrics.get(self.monitor)
+        if current is None or not np.isfinite(current):
+            return
+
+        is_better = self.best_score is None or (
+            current > self.best_score
+            if self.mode == "max"
+            else current < self.best_score
+        )
+        if is_better:
+            self.best_score = current
+            self.best_metrics = metrics
+
+
+def _load_checkpoint_weights(model, checkpoint_path):
+    """Load only model weights without constructing another Trainer loop."""
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    state_dict = checkpoint.get("state_dict")
+    if state_dict is None:
+        raise RuntimeError(
+            f"Checkpoint does not contain a model state_dict: {checkpoint_path}"
+        )
+    model.load_state_dict(state_dict)
+    del state_dict, checkpoint
 
 
 def _validate_cv_inputs(
@@ -337,6 +402,10 @@ def run_5fold_cv(
 
         print(f"[Fold {fold}] Checkpoint dir: {ckpt_dir}", flush=True)
 
+        best_metrics_callback = _BestValidationMetrics(
+            monitor="val_sensitivity",
+            mode="max",
+        )
         checkpoint_callback = ModelCheckpoint(
             dirpath=str(ckpt_dir),
             filename="best-{epoch:02d}-{val_sensitivity:.4f}-{val_auc_roc:.4f}",
@@ -362,6 +431,7 @@ def run_5fold_cv(
             default_root_dir=str(logs_root / model_name / fold_version),
             callbacks=[
                 DebugBatchShapeCallback(),
+                best_metrics_callback,
                 checkpoint_callback,
                 #early_stopping,
             ],
@@ -376,17 +446,22 @@ def run_5fold_cv(
         if not checkpoint_callback.best_model_path:
             raise RuntimeError(f"Fold {fold} did not produce a best checkpoint.")
 
-        # Re-evaluate the selected checkpoint so the reported MRI metrics and
-        # fusion predictions refer to exactly the same model weights.
-        best_metrics = trainer.validate(
-            model=model,
-            datamodule=datamodule,
-            ckpt_path=checkpoint_callback.best_model_path,
-            verbose=False,
-        )[0]
+        if best_metrics_callback.best_metrics is None:
+            raise RuntimeError(
+                f"Fold {fold} did not record metrics for the best checkpoint."
+            )
+        best_metrics = best_metrics_callback.best_metrics
 
         fusion_metrics = {}
         if tabular_model is not None:
+            # ``Trainer.validate(ckpt_path=...)`` used to run a complete second
+            # validation loop here, followed by this probability loop. Loading
+            # the selected weights directly keeps a single inference pass and
+            # avoids retaining another Trainer/DataLoader validation lifecycle.
+            _load_checkpoint_weights(
+                model,
+                checkpoint_callback.best_model_path,
+            )
             image_probabilities, validation_labels = _predict_image_probabilities(
                 model,
                 datamodule.val_dataloader(),
@@ -490,6 +565,13 @@ def run_5fold_cv(
         print(f"Best checkpoint saved at: {checkpoint_callback.best_model_path}")
 
         metrics_per_fold.append(fold_metrics)
+
+        # Trainer owns the optimizer, loop state, and accelerator references.
+        # Release them before constructing the next fold.
+        del trainer, model, datamodule
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     summary_dir = logs_root / model_name / "cross_validation_summary"
     summary_dir.mkdir(parents=True, exist_ok=True)
