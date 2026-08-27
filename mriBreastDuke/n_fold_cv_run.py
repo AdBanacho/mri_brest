@@ -14,13 +14,7 @@ import numpy as np
 
 from mriBreastDuke.constants import SEED, LIGHTING_LOGS, NIFTI_PATH, CHECKPOINTS_PATH
 from mriBreastDuke.dataLoaders import ClinicalFeaturePreprocessor, NiftiDataModule, SUBTRACTION_NONE
-from mriBreastDuke.classificators import (
-    aligned_predict_proba,
-    fuse_probabilities,
-    probability_metrics,
-    save_fusion_predictions,
-    DebugBatchShapeCallback
-)
+from mriBreastDuke.classificators import DebugBatchShapeCallback
 
 def _resolve_output_dir(path_like):
     path = Path(path_like)
@@ -28,25 +22,6 @@ def _resolve_output_dir(path_like):
         path = Path.cwd() / path
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
-
-
-def _predict_image_probabilities(model, dataloader, num_classes):
-    probabilities = []
-    labels = []
-    model.eval()
-    device = model.device
-    with torch.inference_mode():
-        for images, batch_labels in dataloader:
-            logits = model(images.to(device))
-            if num_classes == 2 and (logits.ndim == 1 or logits.shape[1] == 1):
-                positive = torch.sigmoid(logits.view(-1))
-                batch_probabilities = torch.stack((1.0 - positive, positive), dim=1)
-            else:
-                batch_probabilities = torch.softmax(logits, dim=1)
-            probabilities.append(batch_probabilities.cpu().numpy())
-            labels.append(batch_labels.detach().cpu().numpy())
-
-    return np.concatenate(probabilities), np.concatenate(labels)
 
 
 def _scalar_metrics(metrics):
@@ -97,22 +72,6 @@ class _BestValidationMetrics(pl.Callback):
             self.best_metrics = metrics
 
 
-def _load_checkpoint_weights(model, checkpoint_path):
-    """Load only model weights without constructing another Trainer loop."""
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=False,
-    )
-    state_dict = checkpoint.get("state_dict")
-    if state_dict is None:
-        raise RuntimeError(
-            f"Checkpoint does not contain a model state_dict: {checkpoint_path}"
-        )
-    model.load_state_dict(state_dict)
-    del state_dict, checkpoint
-
-
 def _validate_cv_inputs(
     df,
     num_folds,
@@ -120,7 +79,6 @@ def _validate_cv_inputs(
     continuous_columns,
     categorical_columns,
     tabular_model_factory,
-    fusion_alpha,
 ):
     """Validate labels, groups, and merged tabular columns before training."""
     if "label" not in df.columns:
@@ -167,9 +125,6 @@ def _validate_cv_inputs(
         raise ValueError(
             "Tabular columns and tabular_model_factory must be provided together."
         )
-    if not 0.0 <= fusion_alpha <= 1.0:
-        raise ValueError("fusion_alpha must be between 0 and 1.")
-
     if group_column is None:
         class_counts = np.bincount(integer_labels, minlength=len(unique_labels))
         if np.any(class_counts < num_folds):
@@ -249,7 +204,6 @@ def run_5fold_cv(
     group_column=None,
     tabular_model_factory=None,
     tabular_model_name="xgboost",
-    fusion_alpha=0.5,
 ):
     """Train MRI and optional tabular branches in leakage-safe CV folds.
 
@@ -270,7 +224,6 @@ def run_5fold_cv(
         continuous_columns=clinical_continuous_columns,
         categorical_columns=clinical_categorical_columns,
         tabular_model_factory=tabular_model_factory,
-        fusion_alpha=fusion_alpha,
     )
     use_tabular_features = bool(continuous_columns or categorical_columns)
     num_classes = len(np.unique(y))
@@ -313,14 +266,12 @@ def run_5fold_cv(
 
         tabular_preprocessor = None
         tabular_model = None
-        tabular_validation_probabilities = None
         if use_tabular_features:
             tabular_preprocessor = ClinicalFeaturePreprocessor(
                 continuous_columns=continuous_columns,
                 categorical_columns=categorical_columns,
             )
             train_tabular = tabular_preprocessor.fit_transform(train_df)
-            validation_tabular = tabular_preprocessor.transform(val_df)
             tabular_model = tabular_model_factory()
             tabular_labels = train_df["label"].values
             tabular_sample_weights = compute_sample_weight(
@@ -334,11 +285,6 @@ def run_5fold_cv(
                 train_tabular,
                 tabular_labels,
                 sample_weight=tabular_sample_weights,
-            )
-            tabular_validation_probabilities = aligned_predict_proba(
-                tabular_model,
-                validation_tabular,
-                num_classes=num_classes,
             )
             print(
                 f"[Fold {fold}] {tabular_model_name} input dimension: "
@@ -399,6 +345,12 @@ def run_5fold_cv(
                 f"{tabular_model_path}",
                 flush=True,
             )
+            # The saved tabular artifacts are consumed by the standalone
+            # validation workflow; MRI training does not need to retain them.
+            tabular_preprocessor = None
+            tabular_model = None
+            del train_tabular, tabular_labels, tabular_sample_weights
+            gc.collect()
 
         print(f"[Fold {fold}] Checkpoint dir: {ckpt_dir}", flush=True)
 
@@ -452,68 +404,6 @@ def run_5fold_cv(
             )
         best_metrics = best_metrics_callback.best_metrics
 
-        fusion_metrics = {}
-        if tabular_model is not None:
-            # ``Trainer.validate(ckpt_path=...)`` used to run a complete second
-            # validation loop here, followed by this probability loop. Loading
-            # the selected weights directly keeps a single inference pass and
-            # avoids retaining another Trainer/DataLoader validation lifecycle.
-            _load_checkpoint_weights(
-                model,
-                checkpoint_callback.best_model_path,
-            )
-            image_probabilities, validation_labels = _predict_image_probabilities(
-                model,
-                datamodule.val_dataloader(),
-                num_classes=num_classes,
-            )
-            expected_validation_labels = val_df["label"].to_numpy(dtype=np.int64)
-            if not np.array_equal(validation_labels, expected_validation_labels):
-                raise RuntimeError(
-                    "MRI validation predictions are not aligned with the tabular "
-                    "rows. Keep the validation DataLoader deterministic and "
-                    "unshuffled before probability fusion."
-                )
-            fused_probabilities = fuse_probabilities(
-                image_probabilities,
-                tabular_validation_probabilities,
-                alpha=fusion_alpha,
-            )
-            fusion_metrics.update(
-                probability_metrics(
-                    validation_labels,
-                    image_probabilities,
-                    prefix="image",
-                )
-            )
-            fusion_metrics.update(
-                probability_metrics(
-                    validation_labels,
-                    tabular_validation_probabilities,
-                    prefix=tabular_model_name,
-                )
-            )
-            fusion_metrics.update(
-                probability_metrics(
-                    validation_labels,
-                    fused_probabilities,
-                    prefix="fusion",
-                )
-            )
-            save_fusion_predictions(
-                val_df,
-                validation_labels,
-                image_probabilities,
-                tabular_validation_probabilities,
-                fused_probabilities,
-                ckpt_dir / "fusion_validation_predictions.csv",
-                tabular_model_name=tabular_model_name,
-            )
-            print(
-                f"[Fold {fold}] Decision fusion alpha (MRI weight): {fusion_alpha}",
-                flush=True,
-            )
-
         fold_history = {
             "fold": fold,
 
@@ -534,8 +424,6 @@ def run_5fold_cv(
             k: float(v) for k, v in best_metrics.items()
             if isinstance(v, (int, float)) or hasattr(v, "item")
         }
-        fold_metrics.update(fusion_metrics)
-
         # Final flush/save for this fold.
         if logger is not None:
             if hasattr(logger, "save"):
@@ -568,7 +456,7 @@ def run_5fold_cv(
 
         # Trainer owns the optimizer, loop state, and accelerator references.
         # Release them before constructing the next fold.
-        del trainer, model, datamodule
+        del trainer, model, datamodule, tabular_model, tabular_preprocessor
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
