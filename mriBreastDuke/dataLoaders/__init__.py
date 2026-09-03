@@ -16,6 +16,7 @@ from .subtraction import (
 )
 
 from .clinical_preprocessing import ClinicalFeaturePreprocessor
+from .lasso_feature_selection import LassoFeatureSelector
 
 from .NiftiDataModule import NiftiDataModule
 from .NiftiDataset import NiftiDataset
@@ -36,6 +37,7 @@ __all__ = [
     "SUBTRACTION_NONE",
     "get_input_channels",
     "ClinicalFeaturePreprocessor",
+    "LassoFeatureSelector",
     "IMAGING_FEATURE_GROUPS",
     "merge_precomputed_imaging_features"
 ]

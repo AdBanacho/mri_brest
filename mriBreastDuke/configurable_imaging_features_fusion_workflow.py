@@ -14,6 +14,7 @@ from mriBreastDuke.constants import IMAGING_FEATURES_FILE_NAME, SEED
 from mriBreastDuke.dataLoaders import (
     CLINICAL_PREDICTOR_COLUMNS,
     IMAGING_FEATURE_GROUPS,
+    LassoFeatureSelector,
     SENSITIVE_CLINICAL_PREDICTOR_COLUMNS,
     get_oncotype_clinical_predictors_as_study_df,
     merge_precomputed_imaging_features,
@@ -27,6 +28,7 @@ from mriBreastDuke.n_fold_cv_run import run_5fold_cv
 MRI_MODELS = ("fcn", "densenet121", "resnet18")
 FEATURE_GROUPS = ("clinical", *IMAGING_FEATURE_GROUPS)
 FEATURE_MODELS = ("xgboost", "mlp")
+FEATURE_SELECTORS = ("none", "lasso")
 
 
 def parse_args():
@@ -54,6 +56,15 @@ def parse_args():
         default="xgboost",
     )
     parser.add_argument(
+        "--feature_selector",
+        choices=FEATURE_SELECTORS,
+        default="none",
+        help=(
+            "Optional fold-local tabular feature selection. 'lasso' uses "
+            "L1-regularized logistic regression with inner CV."
+        ),
+    )
+    parser.add_argument(
         "--imaging_features_file",
         default=IMAGING_FEATURES_FILE_NAME,
         help="Path to Imaging_Features.xlsx or its CSV export.",
@@ -75,6 +86,18 @@ def parse_args():
     parser.add_argument("--xgb_subsample", type=float, default=0.8)
     parser.add_argument("--xgb_colsample_bytree", type=float, default=0.8)
     parser.add_argument("--xgb_n_jobs", type=int, default=8)
+
+    parser.add_argument("--lasso_cv_folds", type=int, default=5)
+    parser.add_argument(
+        "--lasso_cs",
+        type=int,
+        default=20,
+        help="Number of inverse-regularization strengths evaluated by LASSO CV.",
+    )
+    parser.add_argument("--lasso_max_iter", type=int, default=5000)
+    parser.add_argument("--lasso_tolerance", type=float, default=1e-4)
+    parser.add_argument("--lasso_min_features", type=int, default=1)
+    parser.add_argument("--lasso_n_jobs", type=int, default=8)
 
     parser.add_argument("--mlp_hidden_layers", default="128,64")
     parser.add_argument("--mlp_alpha", type=float, default=1e-4)
@@ -149,6 +172,21 @@ def make_feature_model(args, num_classes):
     )
 
 
+def make_feature_selector(args):
+    """Build the optional fold-local selector for encoded tabular columns."""
+    if args.feature_selector == "none":
+        return None
+    return LassoFeatureSelector(
+        cv_folds=args.lasso_cv_folds,
+        cs=args.lasso_cs,
+        max_iter=args.lasso_max_iter,
+        tolerance=args.lasso_tolerance,
+        min_features=args.lasso_min_features,
+        n_jobs=args.lasso_n_jobs,
+        random_state=SEED,
+    )
+
+
 def prepare_studies_and_features(args):
     selected_groups = tuple(dict.fromkeys(args.feature_groups))
     imaging_groups = tuple(
@@ -188,9 +226,16 @@ def prepare_studies_and_features(args):
 
 def build_experiment_name(args, selected_groups):
     """Return the shared checkpoint/log directory name for one grid entry."""
+    selector_suffix = ""
+    if args.feature_selector == "lasso":
+        selector_suffix = (
+            f"_lasso-cv{args.lasso_cv_folds}-cs{args.lasso_cs}-"
+            f"min{args.lasso_min_features}"
+        )
     return (
         f"ImagingFeaturesFusion_{args.mri_model}_{args.subtraction_mode}_"
-        f"{'-'.join(selected_groups)}_{args.feature_model}_lr{args.lr:.0e}_"
+        f"{'-'.join(selected_groups)}_{args.feature_model}{selector_suffix}_"
+        f"lr{args.lr:.0e}_"
         f"sens{args.sensitivity_lambda:g}_boost{args.positive_boost:g}_"
         f"bs{args.batch_size}"
     )
@@ -247,6 +292,9 @@ def main():
     def feature_model_factory():
         return make_feature_model(args, num_classes)
 
+    def feature_selector_factory():
+        return make_feature_selector(args)
+
     experiment_name = build_experiment_name(args, selected_groups)
     metrics = run_5fold_cv(
         df=studies,
@@ -263,6 +311,11 @@ def main():
         group_column="patientId",
         tabular_model_factory=feature_model_factory,
         tabular_model_name=args.feature_model,
+        tabular_feature_selector_factory=(
+            feature_selector_factory
+            if args.feature_selector != "none"
+            else None
+        ),
     )
     summarize_metrics(metrics)
 
