@@ -40,6 +40,7 @@ LASSO_MAX_ITER=${LASSO_MAX_ITER:-5000}
 LASSO_TOLERANCE=${LASSO_TOLERANCE:-1e-4}
 LASSO_MIN_FEATURES=${LASSO_MIN_FEATURES:-1}
 LASSO_N_JOBS=${LASSO_N_JOBS:-8}
+LASSO_PLOT_TOP_N=${LASSO_PLOT_TOP_N:-30}
 
 N_MRI=${#MRI_MODELS[@]}
 N_SUB=${#SUBTRACTIONS[@]}
@@ -111,6 +112,7 @@ python -m mriBreastDuke.configurable_imaging_features_fusion_workflow \
     --lasso_tolerance "$LASSO_TOLERANCE" \
     --lasso_min_features "$LASSO_MIN_FEATURES" \
     --lasso_n_jobs "$LASSO_N_JOBS" \
+    --lasso_plot_top_n "$LASSO_PLOT_TOP_N" \
     --epoch 30 \
     --num_folds 5 \
     --batch_size "$BATCH_SIZE" \

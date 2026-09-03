@@ -1,4 +1,5 @@
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -10,6 +11,9 @@ SPEC = importlib.util.spec_from_file_location("lasso_feature_selection", MODULE_
 LASSO_MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(LASSO_MODULE)
 LassoFeatureSelector = LASSO_MODULE.LassoFeatureSelector
+save_lasso_feature_importance_chart = (
+    LASSO_MODULE.save_lasso_feature_importance_chart
+)
 
 
 class LassoFeatureSelectorTest(unittest.TestCase):
@@ -90,6 +94,53 @@ class LassoFeatureSelectorTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "same columns"):
             selector.transform(np.ones((4, 3)))
+
+    def test_saves_feature_importance_chart(self):
+        labels = np.tile([0, 1], 20)
+        features = np.column_stack(
+            [labels * 2.0, 1 - labels, np.linspace(-1, 1, len(labels))]
+        )
+        names = [
+            "continuous__clinical_signal",
+            "continuous__kinetic_signal",
+            "continuous__morphology_noise",
+        ]
+        selector = LassoFeatureSelector(
+            cv_folds=4,
+            cs=5,
+            max_iter=2000,
+        ).fit(features, labels)
+        fold_report = selector.selection_report(names)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "lasso_feature_importance.png"
+            result_path = save_lasso_feature_importance_chart(
+                fold_report,
+                output_path,
+                title="Test LASSO importance",
+                top_n=2,
+            )
+
+            self.assertEqual(result_path, output_path)
+            self.assertTrue(output_path.is_file())
+            self.assertGreater(output_path.stat().st_size, 1000)
+
+            stability_report = fold_report.rename(
+                columns={"lasso_importance": "mean_lasso_importance"}
+            ).drop(columns="selected")
+            stability_report["selection_count"] = 1
+            stability_report["selection_frequency"] = 0.8
+            stability_path = Path(directory) / "lasso_feature_stability.png"
+            save_lasso_feature_importance_chart(
+                stability_report,
+                stability_path,
+                title="Test LASSO stability",
+                importance_column="mean_lasso_importance",
+                top_n=2,
+                frequency_column="selection_frequency",
+            )
+            self.assertTrue(stability_path.is_file())
+            self.assertGreater(stability_path.stat().st_size, 1000)
 
 
 if __name__ == "__main__":

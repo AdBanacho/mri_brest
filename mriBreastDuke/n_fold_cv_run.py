@@ -14,7 +14,12 @@ from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 
 from mriBreastDuke.constants import SEED, LIGHTING_LOGS, NIFTI_PATH, CHECKPOINTS_PATH
-from mriBreastDuke.dataLoaders import ClinicalFeaturePreprocessor, NiftiDataModule, SUBTRACTION_NONE
+from mriBreastDuke.dataLoaders import (
+    ClinicalFeaturePreprocessor,
+    NiftiDataModule,
+    SUBTRACTION_NONE,
+    save_lasso_feature_importance_chart,
+)
 from mriBreastDuke.classificators import DebugBatchShapeCallback
 
 def _resolve_output_dir(path_like):
@@ -206,6 +211,7 @@ def run_5fold_cv(
     tabular_model_factory=None,
     tabular_model_name="xgboost",
     tabular_feature_selector_factory=None,
+    tabular_feature_plot_top_n=30,
 ):
     """Train MRI and optional tabular branches in leakage-safe CV folds.
 
@@ -234,6 +240,8 @@ def run_5fold_cv(
         raise ValueError(
             "A tabular feature selector cannot be used without tabular columns."
         )
+    if tabular_feature_plot_top_n < 1:
+        raise ValueError("tabular_feature_plot_top_n must be at least 1.")
     num_classes = len(np.unique(y))
     tabular_model_name = str(tabular_model_name).strip()
     if use_tabular_features and not tabular_model_name:
@@ -389,6 +397,15 @@ def run_5fold_cv(
                     ckpt_dir / "lasso_feature_selection.csv"
                 )
                 selection_report.to_csv(selection_report_path, index=False)
+                selection_chart_path = (
+                    ckpt_dir / "lasso_feature_importance.png"
+                )
+                save_lasso_feature_importance_chart(
+                    selection_report,
+                    selection_chart_path,
+                    title=f"Fold {fold} selected LASSO feature importance",
+                    top_n=tabular_feature_plot_top_n,
+                )
                 feature_selection_reports.append(selection_report)
                 selected_by_group = (
                     selection_report.loc[selection_report["selected"]]
@@ -405,6 +422,11 @@ def run_5fold_cv(
                 print(
                     f"[Fold {fold}] Saved LASSO report: "
                     f"{selection_report_path}",
+                    flush=True,
+                )
+                print(
+                    f"[Fold {fold}] Saved LASSO chart: "
+                    f"{selection_chart_path}",
                     flush=True,
                 )
             tabular_model_path = ckpt_dir / f"{tabular_model_name}_model.joblib"
@@ -576,8 +598,20 @@ def run_5fold_cv(
         )
         stability_path = selection_output_dir / "lasso_feature_stability.csv"
         stability_report.to_csv(stability_path, index=False)
+        stability_chart_path = (
+            selection_output_dir / "lasso_feature_stability.png"
+        )
+        save_lasso_feature_importance_chart(
+            stability_report,
+            stability_chart_path,
+            title="Cross-fold LASSO feature importance and stability",
+            importance_column="mean_lasso_importance",
+            top_n=tabular_feature_plot_top_n,
+            frequency_column="selection_frequency",
+        )
         print(f"[LASSO] Fold selections: {by_fold_path}", flush=True)
         print(f"[LASSO] Cross-fold stability: {stability_path}", flush=True)
+        print(f"[LASSO] Cross-fold chart: {stability_chart_path}", flush=True)
 
     summary_writer = SummaryWriter(log_dir=str(summary_dir))
     print(f"[CV SUMMARY] TensorBoard log dir: {summary_dir}", flush=True)

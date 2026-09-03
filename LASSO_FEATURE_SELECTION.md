@@ -44,6 +44,8 @@ The main selector controls are:
   cross-validated solution shrinks every coefficient to zero.
 - `--lasso_max_iter`, `--lasso_tolerance`, and `--lasso_n_jobs`: solver
   controls.
+- `--lasso_plot_top_n`: maximum number of selected features displayed in each
+  saved importance chart (default: 30).
 
 Use exactly the same selector arguments for standalone validation. They are
 part of the experiment directory name so that LASSO and non-LASSO artifacts
@@ -57,6 +59,8 @@ Each `fold_N/checkpoints` directory contains:
 - `tabular_selected_feature_names.txt`: columns passed to XGBoost or the MLP.
 - `lasso_feature_selection.csv`: every encoded feature, its source family,
   coefficient, absolute coefficient importance, rank, and selection flag.
+- `lasso_feature_importance.png`: a horizontal bar chart of the most important
+  selected features in that fold, colored by feature family.
 
 The experiment checkpoint directory also contains:
 
@@ -66,6 +70,8 @@ The experiment checkpoint directory also contains:
   where a rare one-hot category was absent. Rank this file by
   `selection_frequency`, then
   `mean_lasso_importance`, to identify the most stable predictors.
+- `lasso_feature_stability.png`: the cross-fold mean-importance chart annotated
+  with the percentage of folds in which each feature was selected.
 
 Categorical clinical variables are one-hot encoded before selection, so their
 individual levels appear as separate rows in the reports. Imaging-feature

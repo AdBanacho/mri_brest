@@ -1,13 +1,115 @@
 """Leakage-safe LASSO feature selection for preprocessed tabular data."""
 
 import inspect
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.patches import Patch
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from sklearn.utils.validation import check_is_fitted
+
+
+FEATURE_GROUP_COLORS = {
+    "clinical": "#4C78A8",
+    "kinetic": "#F58518",
+    "morphology": "#54A24B",
+    "heterogeneity": "#E45756",
+}
+
+
+def save_lasso_feature_importance_chart(
+    report,
+    output_path,
+    title,
+    importance_column="lasso_importance",
+    top_n=30,
+    frequency_column=None,
+):
+    """Save a horizontal importance chart from a fold or stability report."""
+    if top_n < 1:
+        raise ValueError("top_n must be at least 1.")
+    required_columns = {"feature_name", "feature_group", importance_column}
+    if frequency_column is not None:
+        required_columns.add(frequency_column)
+    missing_columns = required_columns.difference(report.columns)
+    if missing_columns:
+        raise ValueError(
+            f"LASSO chart report is missing columns: {sorted(missing_columns)}"
+        )
+
+    plotted = report.copy()
+    if "selected" in plotted.columns:
+        plotted = plotted.loc[plotted["selected"].astype(bool)]
+    if "selection_count" in plotted.columns:
+        plotted = plotted.loc[plotted["selection_count"] > 0]
+    plotted = plotted.loc[
+        np.isfinite(plotted[importance_column].to_numpy(dtype=np.float64))
+    ]
+    if plotted.empty:
+        raise ValueError("LASSO chart report contains no selected finite features.")
+
+    plotted = (
+        plotted.sort_values(
+            [importance_column, "feature_name"],
+            ascending=[False, True],
+            kind="stable",
+        )
+        .head(top_n)
+        .sort_values(importance_column, ascending=True, kind="stable")
+    )
+    display_names = [
+        str(name).split("__", 1)[-1]
+        for name in plotted["feature_name"]
+    ]
+    colors = [
+        FEATURE_GROUP_COLORS.get(group, "#7F7F7F")
+        for group in plotted["feature_group"]
+    ]
+    figure_height = min(15.0, max(4.5, 0.34 * len(plotted) + 2.0))
+    fig, ax = plt.subplots(figsize=(12, figure_height))
+    bars = ax.barh(
+        np.arange(len(plotted)),
+        plotted[importance_column].to_numpy(dtype=np.float64),
+        color=colors,
+    )
+    ax.set_yticks(np.arange(len(plotted)), labels=display_names)
+    ax.set_xlabel("Absolute LASSO coefficient")
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.25)
+
+    if frequency_column is not None:
+        frequencies = plotted[frequency_column].to_numpy(dtype=np.float64)
+        for bar, frequency in zip(bars, frequencies):
+            ax.text(
+                bar.get_width(),
+                bar.get_y() + bar.get_height() / 2,
+                f"  selected in {frequency:.0%} of folds",
+                va="center",
+                fontsize=8,
+            )
+
+    present_groups = [
+        group for group in FEATURE_GROUP_COLORS
+        if group in set(plotted["feature_group"])
+    ]
+    ax.legend(
+        handles=[
+            Patch(color=FEATURE_GROUP_COLORS[group], label=group)
+            for group in present_groups
+        ],
+        title="Feature family",
+        loc="lower right",
+    )
+    fig.tight_layout()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
 
 
 class LassoFeatureSelector(TransformerMixin, BaseEstimator):

@@ -98,6 +98,12 @@ def parse_args():
     parser.add_argument("--lasso_tolerance", type=float, default=1e-4)
     parser.add_argument("--lasso_min_features", type=int, default=1)
     parser.add_argument("--lasso_n_jobs", type=int, default=8)
+    parser.add_argument(
+        "--lasso_plot_top_n",
+        type=int,
+        default=30,
+        help="Maximum number of selected features shown in each saved PNG chart.",
+    )
 
     parser.add_argument("--mlp_hidden_layers", default="128,64")
     parser.add_argument("--mlp_alpha", type=float, default=1e-4)
@@ -316,6 +322,7 @@ def main():
             if args.feature_selector != "none"
             else None
         ),
+        tabular_feature_plot_top_n=args.lasso_plot_top_n,
     )
     summarize_metrics(metrics)
 
