@@ -32,6 +32,7 @@ from mriBreastDuke.classificators import (
 from mriBreastDuke.configurable_imaging_features_fusion_workflow import (
     FEATURE_GROUPS,
     FEATURE_MODELS,
+    FEATURE_SELECTORS,
     MRI_MODELS,
     build_experiment_name,
     make_mri_network,
@@ -85,6 +86,11 @@ def parse_args():
         default="xgboost",
     )
     parser.add_argument(
+        "--feature_selector",
+        choices=FEATURE_SELECTORS,
+        default="none",
+    )
+    parser.add_argument(
         "--imaging_features_file",
         default=IMAGING_FEATURES_FILE_NAME,
         help="Path to Imaging_Features.xlsx or its CSV export.",
@@ -92,6 +98,12 @@ def parse_args():
     parser.add_argument("--imaging_patient_id_column", default="Patient ID")
     parser.add_argument("--allow_missing_imaging_features", action="store_true")
     parser.add_argument("--include_sensitive", action="store_true")
+    parser.add_argument("--lasso_cv_folds", type=int, default=5)
+    parser.add_argument("--lasso_cs", type=int, default=20)
+    parser.add_argument("--lasso_max_iter", type=int, default=5000)
+    parser.add_argument("--lasso_tolerance", type=float, default=1e-4)
+    parser.add_argument("--lasso_min_features", type=int, default=1)
+    parser.add_argument("--lasso_n_jobs", type=int, default=8)
 
     parser.add_argument("--num_folds", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=4)
@@ -397,7 +409,11 @@ def run_validation(args):
         checkpoint_path = find_best_checkpoint(checkpoint_dir)
         preprocessor_path = checkpoint_dir / "tabular_preprocessor.joblib"
         tabular_model_path = checkpoint_dir / f"{args.feature_model}_model.joblib"
-        for artifact_path in (preprocessor_path, tabular_model_path):
+        artifact_paths = [preprocessor_path, tabular_model_path]
+        selector_path = checkpoint_dir / "tabular_feature_selector.joblib"
+        if args.feature_selector == "lasso":
+            artifact_paths.append(selector_path)
+        for artifact_path in artifact_paths:
             if not artifact_path.is_file():
                 raise FileNotFoundError(f"Missing saved fold artifact: {artifact_path}")
 
@@ -437,9 +453,14 @@ def run_validation(args):
 
         preprocessor = joblib.load(preprocessor_path)
         tabular_model = joblib.load(tabular_model_path)
+        tabular_features = preprocessor.transform(val_df)
+        tabular_feature_selector = None
+        if args.feature_selector == "lasso":
+            tabular_feature_selector = joblib.load(selector_path)
+            tabular_features = tabular_feature_selector.transform(tabular_features)
         tabular_probabilities = aligned_predict_proba(
             tabular_model,
-            preprocessor.transform(val_df),
+            tabular_features,
             num_classes=num_classes,
         )
         fused_probabilities = fuse_probabilities(
@@ -499,7 +520,14 @@ def run_validation(args):
                 print(f"  {metric_name}: {value:.4f}", flush=True)
 
         image_model.to("cpu")
-        del image_model, datamodule, preprocessor, tabular_model
+        del (
+            image_model,
+            datamodule,
+            preprocessor,
+            tabular_model,
+            tabular_feature_selector,
+            tabular_features,
+        )
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

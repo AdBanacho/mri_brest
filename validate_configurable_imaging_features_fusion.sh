@@ -34,6 +34,13 @@ LRS=(1e-4)
 
 FUSION_ALPHA=${FUSION_ALPHA:-0.5}
 IMAGING_FEATURES_FILE=${IMAGING_FEATURES_FILE:-/net/home/plgrid/plgabanacho/mri_brest/mriBreastDuke/features/Imaging_Features.xlsx}
+FEATURE_SELECTOR=${FEATURE_SELECTOR:-lasso}
+LASSO_CV_FOLDS=${LASSO_CV_FOLDS:-5}
+LASSO_CS=${LASSO_CS:-20}
+LASSO_MAX_ITER=${LASSO_MAX_ITER:-5000}
+LASSO_TOLERANCE=${LASSO_TOLERANCE:-1e-4}
+LASSO_MIN_FEATURES=${LASSO_MIN_FEATURES:-1}
+LASSO_N_JOBS=${LASSO_N_JOBS:-8}
 CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-/net/scratch/hscra/plgrid/plgabanacho/check_points}
 VALIDATION_OUTPUT_DIR=${VALIDATION_OUTPUT_DIR:-validation_charts}
 
@@ -88,6 +95,7 @@ echo "MRI model: $MRI_MODEL"
 echo "Subtraction: $SUBTRACTION"
 echo "Feature groups: $FEATURE_GROUPS_CSV"
 echo "Feature model: $FEATURE_MODEL"
+echo "Feature selector: $FEATURE_SELECTOR"
 echo "Batch size: $BATCH_SIZE"
 echo "Positive boost: $POSITIVE_BOOST"
 echo "Sensitivity lambda: $SENSITIVITY_LAMBDA"
@@ -102,6 +110,13 @@ python -m mriBreastDuke.validate_configurable_imaging_features_fusion \
     --subtraction_mode "$SUBTRACTION" \
     --feature_groups "${FEATURE_GROUP_ARGS[@]}" \
     --feature_model "$FEATURE_MODEL" \
+    --feature_selector "$FEATURE_SELECTOR" \
+    --lasso_cv_folds "$LASSO_CV_FOLDS" \
+    --lasso_cs "$LASSO_CS" \
+    --lasso_max_iter "$LASSO_MAX_ITER" \
+    --lasso_tolerance "$LASSO_TOLERANCE" \
+    --lasso_min_features "$LASSO_MIN_FEATURES" \
+    --lasso_n_jobs "$LASSO_N_JOBS" \
     --num_folds 5 \
     --batch_size "$BATCH_SIZE" \
     --num_workers 4 \

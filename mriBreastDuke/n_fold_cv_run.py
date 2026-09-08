@@ -3,6 +3,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 import joblib
+import pandas as pd
 from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from pytorch_lightning.loggers import TensorBoardLogger
@@ -13,7 +14,12 @@ from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 
 from mriBreastDuke.constants import SEED, LIGHTING_LOGS, NIFTI_PATH, CHECKPOINTS_PATH
-from mriBreastDuke.dataLoaders import ClinicalFeaturePreprocessor, NiftiDataModule, SUBTRACTION_NONE
+from mriBreastDuke.dataLoaders import (
+    ClinicalFeaturePreprocessor,
+    NiftiDataModule,
+    SUBTRACTION_NONE,
+    save_lasso_feature_importance_chart,
+)
 from mriBreastDuke.classificators import DebugBatchShapeCallback
 
 def _resolve_output_dir(path_like):
@@ -204,6 +210,8 @@ def run_5fold_cv(
     group_column=None,
     tabular_model_factory=None,
     tabular_model_name="xgboost",
+    tabular_feature_selector_factory=None,
+    tabular_feature_plot_top_n=30,
 ):
     """Train MRI and optional tabular branches in leakage-safe CV folds.
 
@@ -211,7 +219,9 @@ def run_5fold_cv(
     before this function is called. Pass those numeric columns through
     ``clinical_continuous_columns``; despite the legacy parameter name, they
     are treated as generic tabular predictors and are imputed/scaled using the
-    training portion of each fold only.
+    training portion of each fold only. An optional tabular feature selector is
+    also fitted only on that training portion and receives patient groups for
+    leakage-safe inner cross-validation.
     """
     (
         y,
@@ -226,6 +236,12 @@ def run_5fold_cv(
         tabular_model_factory=tabular_model_factory,
     )
     use_tabular_features = bool(continuous_columns or categorical_columns)
+    if tabular_feature_selector_factory is not None and not use_tabular_features:
+        raise ValueError(
+            "A tabular feature selector cannot be used without tabular columns."
+        )
+    if tabular_feature_plot_top_n < 1:
+        raise ValueError("tabular_feature_plot_top_n must be at least 1.")
     num_classes = len(np.unique(y))
     tabular_model_name = str(tabular_model_name).strip()
     if use_tabular_features and not tabular_model_name:
@@ -250,6 +266,7 @@ def run_5fold_cv(
     groups = df[group_column].values if group_column is not None else None
     metrics_per_fold = []
     histories_per_fold = []
+    feature_selection_reports = []
 
     split_iterator = skf.split(df, y, groups) if groups is not None else skf.split(df, y)
     for fold, (train_idx, val_idx) in enumerate(split_iterator, start=1):
@@ -266,6 +283,7 @@ def run_5fold_cv(
 
         tabular_preprocessor = None
         tabular_model = None
+        tabular_feature_selector = None
         if use_tabular_features:
             tabular_preprocessor = ClinicalFeaturePreprocessor(
                 continuous_columns=continuous_columns,
@@ -281,6 +299,24 @@ def run_5fold_cv(
             if num_classes == 2 and positive_boost != 1.0:
                 tabular_sample_weights = tabular_sample_weights.copy()
                 tabular_sample_weights[tabular_labels == 1] *= positive_boost
+            preprocessed_dimension = train_tabular.shape[1]
+            if tabular_feature_selector_factory is not None:
+                tabular_feature_selector = tabular_feature_selector_factory()
+                if tabular_feature_selector is None:
+                    raise ValueError(
+                        "tabular_feature_selector_factory returned None."
+                    )
+                selector_groups = (
+                    train_df[group_column].to_numpy()
+                    if group_column is not None
+                    else None
+                )
+                train_tabular = tabular_feature_selector.fit_transform(
+                    train_tabular,
+                    tabular_labels,
+                    sample_weight=tabular_sample_weights,
+                    groups=selector_groups,
+                )
             tabular_model.fit(
                 train_tabular,
                 tabular_labels,
@@ -288,7 +324,8 @@ def run_5fold_cv(
             )
             print(
                 f"[Fold {fold}] {tabular_model_name} input dimension: "
-                f"{tabular_preprocessor.output_dimension}",
+                f"{train_tabular.shape[1]} "
+                f"(preprocessed={preprocessed_dimension})",
                 flush=True,
             )
 
@@ -338,6 +375,60 @@ def run_5fold_cv(
                 f"[Fold {fold}] Saved tabular preprocessor: {preprocessor_path}",
                 flush=True,
             )
+            if tabular_feature_selector is not None:
+                selector_path = ckpt_dir / "tabular_feature_selector.joblib"
+                joblib.dump(tabular_feature_selector, selector_path)
+                all_feature_names = tabular_preprocessor.get_feature_names_out()
+                selected_feature_names = (
+                    tabular_feature_selector.get_feature_names_out(all_feature_names)
+                )
+                selected_names_path = (
+                    ckpt_dir / "tabular_selected_feature_names.txt"
+                )
+                selected_names_path.write_text(
+                    "\n".join(selected_feature_names) + "\n",
+                    encoding="utf-8",
+                )
+                selection_report = tabular_feature_selector.selection_report(
+                    all_feature_names
+                )
+                selection_report.insert(0, "fold", fold)
+                selection_report_path = (
+                    ckpt_dir / "lasso_feature_selection.csv"
+                )
+                selection_report.to_csv(selection_report_path, index=False)
+                selection_chart_path = (
+                    ckpt_dir / "lasso_feature_importance.png"
+                )
+                save_lasso_feature_importance_chart(
+                    selection_report,
+                    selection_chart_path,
+                    title=f"Fold {fold} selected LASSO feature importance",
+                    top_n=tabular_feature_plot_top_n,
+                )
+                feature_selection_reports.append(selection_report)
+                selected_by_group = (
+                    selection_report.loc[selection_report["selected"]]
+                    .groupby("feature_group")["feature_name"]
+                    .count()
+                    .to_dict()
+                )
+                print(
+                    f"[Fold {fold}] LASSO selected "
+                    f"{len(selected_feature_names)}/{len(all_feature_names)} "
+                    f"features: {selected_by_group}",
+                    flush=True,
+                )
+                print(
+                    f"[Fold {fold}] Saved LASSO report: "
+                    f"{selection_report_path}",
+                    flush=True,
+                )
+                print(
+                    f"[Fold {fold}] Saved LASSO chart: "
+                    f"{selection_chart_path}",
+                    flush=True,
+                )
             tabular_model_path = ckpt_dir / f"{tabular_model_name}_model.joblib"
             joblib.dump(tabular_model, tabular_model_path)
             print(
@@ -349,6 +440,7 @@ def run_5fold_cv(
             # validation workflow; MRI training does not need to retain them.
             tabular_preprocessor = None
             tabular_model = None
+            tabular_feature_selector = None
             del train_tabular, tabular_labels, tabular_sample_weights
             gc.collect()
 
@@ -456,13 +548,70 @@ def run_5fold_cv(
 
         # Trainer owns the optimizer, loop state, and accelerator references.
         # Release them before constructing the next fold.
-        del trainer, model, datamodule, tabular_model, tabular_preprocessor
+        del (
+            trainer,
+            model,
+            datamodule,
+            tabular_model,
+            tabular_preprocessor,
+            tabular_feature_selector,
+        )
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
     summary_dir = logs_root / model_name / "cross_validation_summary"
     summary_dir.mkdir(parents=True, exist_ok=True)
+
+    if feature_selection_reports:
+        selection_output_dir = checkpoints_root / model_name
+        by_fold_path = selection_output_dir / "lasso_feature_selection_by_fold.csv"
+        combined_report = pd.concat(feature_selection_reports, ignore_index=True)
+        combined_report.to_csv(by_fold_path, index=False)
+
+        stability_report = (
+            combined_report.groupby(
+                ["feature_name", "feature_group"],
+                as_index=False,
+            )
+            .agg(
+                feature_occurrence_count=("fold", "nunique"),
+                selection_count=("selected", "sum"),
+                mean_lasso_importance=("lasso_importance", "mean"),
+                max_lasso_importance=("lasso_importance", "max"),
+                mean_lasso_rank=("lasso_rank", "mean"),
+            )
+            .assign(
+                selection_frequency=lambda report: (
+                    report["selection_count"] / len(feature_selection_reports)
+                )
+            )
+            .sort_values(
+                [
+                    "selection_frequency",
+                    "mean_lasso_importance",
+                    "feature_name",
+                ],
+                ascending=[False, False, True],
+                kind="stable",
+            )
+        )
+        stability_path = selection_output_dir / "lasso_feature_stability.csv"
+        stability_report.to_csv(stability_path, index=False)
+        stability_chart_path = (
+            selection_output_dir / "lasso_feature_stability.png"
+        )
+        save_lasso_feature_importance_chart(
+            stability_report,
+            stability_chart_path,
+            title="Cross-fold LASSO feature importance and stability",
+            importance_column="mean_lasso_importance",
+            top_n=tabular_feature_plot_top_n,
+            frequency_column="selection_frequency",
+        )
+        print(f"[LASSO] Fold selections: {by_fold_path}", flush=True)
+        print(f"[LASSO] Cross-fold stability: {stability_path}", flush=True)
+        print(f"[LASSO] Cross-fold chart: {stability_chart_path}", flush=True)
 
     summary_writer = SummaryWriter(log_dir=str(summary_dir))
     print(f"[CV SUMMARY] TensorBoard log dir: {summary_dir}", flush=True)
