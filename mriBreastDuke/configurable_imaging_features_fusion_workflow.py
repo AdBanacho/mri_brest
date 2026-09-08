@@ -78,7 +78,7 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--positive_boost", type=float, default=1.0)
-    parser.add_argument("--sensitivity_lambda", type=float, default=0.3)
+    parser.add_argument("--sensitivity_lambda", type=float, default=0.05)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--xgb_n_estimators", type=int, default=300)
     parser.add_argument("--xgb_max_depth", type=int, default=3)

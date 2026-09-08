@@ -29,7 +29,7 @@ FEATURE_GROUP_SETS=("clinical" "clinical,kinetic,morphology,heterogeneity")
 FEATURE_MODELS=(xgboost mlp)
 BATCH_SIZES=(4)
 POS_BOOSTS=(1.0 2.0)
-SENS_LAMBDAS=(0.3)
+SENS_LAMBDAS=(0.05)
 LRS=(1e-4)
 
 FUSION_ALPHA=${FUSION_ALPHA:-0.5}

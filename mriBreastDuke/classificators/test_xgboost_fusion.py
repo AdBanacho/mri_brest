@@ -40,3 +40,4 @@ class FusionOutputTest(unittest.TestCase):
         )
 
         self.assertEqual(metrics["image_sensitivity"], 0.5)
+        self.assertEqual(metrics["image_specificity"], 1.0)

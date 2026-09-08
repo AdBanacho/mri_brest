@@ -9,7 +9,6 @@ fold, and reports image, tabular, and decision-fusion metrics.
 import argparse
 import gc
 import json
-import re
 from pathlib import Path
 
 import joblib
@@ -29,6 +28,7 @@ from mriBreastDuke.classificators import (
     probability_metrics,
     save_fusion_predictions,
 )
+from mriBreastDuke.checkpoint_selection import rank_checkpoints
 from mriBreastDuke.configurable_imaging_features_fusion_workflow import (
     FEATURE_GROUPS,
     FEATURE_MODELS,
@@ -50,14 +50,6 @@ from mriBreastDuke.dataLoaders import (
     SUBTRACTION_MODES,
     SUBTRACTION_NONE,
     get_input_channels,
-)
-
-
-BEST_CHECKPOINT_PATTERN = re.compile(
-    r"best-epoch=(?P<epoch>\d+)-"
-    r"val_sensitivity=(?P<sensitivity>[-+]?\d*\.?\d+)-"
-    r"val_auc_roc=(?P<auc>[-+]?\d*\.?\d+)"
-    r"(?:-v\d+)?\.ckpt$"
 )
 
 
@@ -109,7 +101,7 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--positive_boost", type=float, default=1.0)
-    parser.add_argument("--sensitivity_lambda", type=float, default=0.3)
+    parser.add_argument("--sensitivity_lambda", type=float, default=0.05)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument(
         "--fusion_alpha",
@@ -177,26 +169,13 @@ def _validate_inputs(studies, num_folds, fusion_alpha):
     return integer_labels, len(unique_labels)
 
 
-def _checkpoint_score(path):
-    match = BEST_CHECKPOINT_PATTERN.match(path.name)
-    if match is None:
-        return (0, float("-inf"), float("-inf"), -1, path.stat().st_mtime)
-    return (
-        1,
-        float(match.group("sensitivity")),
-        float(match.group("auc")),
-        int(match.group("epoch")),
-        path.stat().st_mtime,
-    )
-
-
 def find_best_checkpoint(checkpoint_dir):
     candidates = list(checkpoint_dir.glob("best-*.ckpt"))
     if not candidates:
         raise FileNotFoundError(
             f"No best-*.ckpt checkpoint found in: {checkpoint_dir}"
         )
-    return max(candidates, key=_checkpoint_score)
+    return rank_checkpoints(candidates)[0]
 
 
 def _compute_class_weights(labels, num_classes, positive_boost):
