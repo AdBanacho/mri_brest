@@ -447,20 +447,23 @@ def run_5fold_cv(
         print(f"[Fold {fold}] Checkpoint dir: {ckpt_dir}", flush=True)
 
         best_metrics_callback = _BestValidationMetrics(
-            monitor="val_sensitivity",
+            monitor="val_balanced_accuracy",
             mode="max",
         )
         checkpoint_callback = ModelCheckpoint(
             dirpath=str(ckpt_dir),
-            filename="best-{epoch:02d}-{val_sensitivity:.4f}-{val_auc_roc:.4f}",
-            monitor="val_sensitivity",
+            filename=(
+                "best-{epoch:02d}-{val_balanced_accuracy:.4f}-"
+                "{val_sensitivity:.4f}-{val_auc_roc:.4f}"
+            ),
+            monitor="val_balanced_accuracy",
             mode="max",
             save_top_k=1,
             save_last=True,
             verbose=True,
         )
         early_stopping = EarlyStopping(
-            monitor="val_sensitivity",
+            monitor="val_balanced_accuracy",
             mode="max",
             patience=8,
             min_delta=1e-4,
@@ -531,7 +534,7 @@ def run_5fold_cv(
         # Store both
         fold_metrics["best_model_path"] = checkpoint_callback.best_model_path
         best_score = checkpoint_callback.best_model_score
-        fold_metrics["best_val_sensitivity_checkpoint_score"] = (
+        fold_metrics["best_val_balanced_accuracy_checkpoint_score"] = (
             float(best_score) if best_score is not None else float("nan")
         )
 

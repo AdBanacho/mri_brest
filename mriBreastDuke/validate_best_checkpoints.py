@@ -2,7 +2,6 @@ from pathlib import Path
 import argparse
 from numbers import Number
 import math
-import re
 import os
 from typing import List
 
@@ -17,6 +16,7 @@ import matplotlib.pyplot as plt
 
 from mriBreastDuke.constants import CHECKPOINTS_PATH, NIFTI_PATH, SEED, VALIDATION_CHART_PATH
 from mriBreastDuke.classificators import NiftiClassifier, Simple3DFCN
+from mriBreastDuke.checkpoint_selection import rank_checkpoints
 from mriBreastDuke.dataLoaders import (
     NiftiDataModule,
     get_oncotype_score_for_series_as_studyId_and_label_df,
@@ -71,38 +71,13 @@ def parse_args():
     return parser.parse_args()
 
 
-BEST_CKPT_PATTERN = re.compile(
-    r"best-epoch=(?P<epoch>\d+)-val_sensitivity=(?P<sensitivity>[0-9]*\.?[0-9]+)"
-    r"(?:-val_auc_roc=(?P<auc>[0-9]*\.?[0-9]+))?\.ckpt$"
-)
-
-
 def get_top_checkpoints(checkpoint_dir: Path, top_k: int = 3) -> List[Path]:
     candidates = list(checkpoint_dir.glob("best-*.ckpt"))
 
     if not candidates:
         raise FileNotFoundError(f"No best-*.ckpt file found in: {checkpoint_dir}")
 
-    parsed = []
-
-    for path in candidates:
-        match = BEST_CKPT_PATTERN.match(path.name)
-
-        if match:
-            sensitivity = float(match.group("sensitivity"))
-            auc_value = match.group("auc")
-            auc_value = float(auc_value) if auc_value is not None else -1.0
-            epoch = int(match.group("epoch"))
-
-            # Higher sensitivity is primary, AUC secondary, epoch tertiary.
-            parsed.append((sensitivity, auc_value, epoch, path))
-        else:
-            # Fallback for unexpected names.
-            parsed.append((-1.0, -1.0, -1, path))
-
-    parsed.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
-
-    return [item[3] for item in parsed[:top_k]]
+    return rank_checkpoints(candidates)[:top_k]
 
 
 def resolve_fold_checkpoint_dir(checkpoint_root: str, model_name: str, fold: int) -> Path:

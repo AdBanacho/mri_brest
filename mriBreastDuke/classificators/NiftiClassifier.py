@@ -296,13 +296,30 @@ class NiftiClassifier(pl.LightningModule):
             self.val_epoch_soft_sensitivities.clear()
         # --- Scalars ---
         auc = self.val_auc.compute()
-        # Oncotype classification treats class 1 as positive.  Checkpointing
-        # therefore uses its recall rather than macro recall over both classes.
+        # Oncotype classification treats class 1 as positive. Keep its recall
+        # as sensitivity, but also log macro recall (balanced accuracy) so
+        # checkpoint selection cannot reward an all-positive classifier.
         per_class_recall = self.val_sensitivity.compute()
         sensitivity = per_class_recall[1]
+        balanced_accuracy = per_class_recall.mean()
 
         self.log("val_auc_roc", auc, prog_bar=True, on_step=False, on_epoch=True)
         self.log("val_sensitivity", sensitivity, prog_bar=True, on_step=False, on_epoch=True)
+        self.log(
+            "val_balanced_accuracy",
+            balanced_accuracy,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+        )
+        if self.num_classes == 2:
+            self.log(
+                "val_specificity",
+                per_class_recall[0],
+                prog_bar=True,
+                on_step=False,
+                on_epoch=True,
+            )
 
         # --- Confusion matrix figure ---
         cm = self.val_cm.compute().detach().cpu().numpy()

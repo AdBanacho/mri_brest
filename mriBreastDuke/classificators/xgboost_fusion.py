@@ -75,6 +75,16 @@ def probability_metrics(labels, probabilities, prefix):
             )
         ),
     }
+    if probabilities.shape[1] == 2:
+        metrics[f"{prefix}_specificity"] = float(
+            recall_score(
+                labels,
+                predictions,
+                average="binary",
+                pos_label=0,
+                zero_division=0,
+            )
+        )
     try:
         if probabilities.shape[1] == 2:
             auc = roc_auc_score(labels, probabilities[:, 1])
