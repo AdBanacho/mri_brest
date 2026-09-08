@@ -21,6 +21,7 @@ from mriBreastDuke.dataLoaders import (
     save_lasso_feature_importance_chart,
 )
 from mriBreastDuke.classificators import DebugBatchShapeCallback
+from mriBreastDuke.threshold_tuning import make_inner_calibration_split
 
 def _resolve_output_dir(path_like):
     path = Path(path_like)
@@ -212,6 +213,7 @@ def run_5fold_cv(
     tabular_model_name="xgboost",
     tabular_feature_selector_factory=None,
     tabular_feature_plot_top_n=30,
+    inner_calibration_folds=None,
 ):
     """Train MRI and optional tabular branches in leakage-safe CV folds.
 
@@ -221,7 +223,10 @@ def run_5fold_cv(
     are treated as generic tabular predictors and are imputed/scaled using the
     training portion of each fold only. An optional tabular feature selector is
     also fitted only on that training portion and receives patient groups for
-    leakage-safe inner cross-validation.
+    leakage-safe inner cross-validation. When ``inner_calibration_folds`` is
+    set, the outer validation fold remains untouched during training: a
+    patient-grouped subset of the outer training fold is used for checkpoint
+    selection and later decision-threshold calibration.
     """
     (
         y,
@@ -242,6 +247,8 @@ def run_5fold_cv(
         )
     if tabular_feature_plot_top_n < 1:
         raise ValueError("tabular_feature_plot_top_n must be at least 1.")
+    if inner_calibration_folds is not None and inner_calibration_folds < 2:
+        raise ValueError("inner_calibration_folds must be at least 2.")
     num_classes = len(np.unique(y))
     tabular_model_name = str(tabular_model_name).strip()
     if use_tabular_features and not tabular_model_name:
@@ -272,14 +279,48 @@ def run_5fold_cv(
     for fold, (train_idx, val_idx) in enumerate(split_iterator, start=1):
         print(f"\n========== Fold {fold}/{num_folds} ==========")
 
-        train_df = df.iloc[train_idx].reset_index(drop=True)
-        val_df = df.iloc[val_idx].reset_index(drop=True)
+        outer_train_df = df.iloc[train_idx].reset_index(drop=True)
+        outer_validation_df = df.iloc[val_idx].reset_index(drop=True)
         _validate_fold_separation(
-            train_df,
-            val_df,
+            outer_train_df,
+            outer_validation_df,
             group_column=group_column,
             expected_classes=np.arange(num_classes),
         )
+
+        effective_calibration_folds = None
+        if inner_calibration_folds is None:
+            train_df = outer_train_df
+            val_df = outer_validation_df
+        else:
+            inner_groups = (
+                outer_train_df[group_column].to_numpy()
+                if group_column is not None
+                else None
+            )
+            fit_idx, calibration_idx, effective_calibration_folds = (
+                make_inner_calibration_split(
+                    outer_train_df["label"].to_numpy(dtype=np.int64),
+                    groups=inner_groups,
+                    requested_folds=inner_calibration_folds,
+                    random_state=SEED + fold,
+                )
+            )
+            train_df = outer_train_df.iloc[fit_idx].reset_index(drop=True)
+            val_df = outer_train_df.iloc[calibration_idx].reset_index(drop=True)
+            _validate_fold_separation(
+                train_df,
+                val_df,
+                group_column=group_column,
+                expected_classes=np.arange(num_classes),
+            )
+            print(
+                f"[Fold {fold}] inner fit/calibration rows: "
+                f"{len(train_df)}/{len(val_df)}; "
+                f"outer validation rows held out: {len(outer_validation_df)}; "
+                f"effective inner folds: {effective_calibration_folds}",
+                flush=True,
+            )
 
         tabular_preprocessor = None
         tabular_model = None
@@ -362,6 +403,31 @@ def run_5fold_cv(
         # Directory for this fold's checkpoints
         ckpt_dir = checkpoints_root / model_name / fold_version / "checkpoints"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+        if inner_calibration_folds is not None:
+            manifest_columns = list(
+                dict.fromkeys(
+                    column
+                    for column in ("studyId", group_column, "label")
+                    if column is not None and column in outer_train_df.columns
+                )
+            )
+            split_manifest = pd.concat(
+                [
+                    train_df[manifest_columns].assign(split="fit"),
+                    val_df[manifest_columns].assign(split="calibration"),
+                ],
+                ignore_index=True,
+            )
+            split_manifest["requested_inner_folds"] = inner_calibration_folds
+            split_manifest["effective_inner_folds"] = effective_calibration_folds
+            split_manifest_path = ckpt_dir / "inner_calibration_split.csv"
+            split_manifest.to_csv(split_manifest_path, index=False)
+            print(
+                f"[Fold {fold}] Saved inner calibration split: "
+                f"{split_manifest_path}",
+                flush=True,
+            )
 
         if tabular_preprocessor is not None:
             preprocessor_path = ckpt_dir / "tabular_preprocessor.joblib"
@@ -447,23 +513,23 @@ def run_5fold_cv(
         print(f"[Fold {fold}] Checkpoint dir: {ckpt_dir}", flush=True)
 
         best_metrics_callback = _BestValidationMetrics(
-            monitor="val_balanced_accuracy",
+            monitor="val_auc_roc",
             mode="max",
         )
         checkpoint_callback = ModelCheckpoint(
             dirpath=str(ckpt_dir),
             filename=(
-                "best-{epoch:02d}-{val_balanced_accuracy:.4f}-"
-                "{val_sensitivity:.4f}-{val_auc_roc:.4f}"
+                "best-{epoch:02d}-{val_auc_roc:.4f}-"
+                "{val_balanced_accuracy:.4f}-{val_sensitivity:.4f}"
             ),
-            monitor="val_balanced_accuracy",
+            monitor="val_auc_roc",
             mode="max",
             save_top_k=1,
             save_last=True,
             verbose=True,
         )
         early_stopping = EarlyStopping(
-            monitor="val_balanced_accuracy",
+            monitor="val_auc_roc",
             mode="max",
             patience=8,
             min_delta=1e-4,
@@ -519,6 +585,13 @@ def run_5fold_cv(
             k: float(v) for k, v in best_metrics.items()
             if isinstance(v, (int, float)) or hasattr(v, "item")
         }
+        if effective_calibration_folds is not None:
+            fold_metrics["inner_fit_rows"] = len(train_df)
+            fold_metrics["inner_calibration_rows"] = len(val_df)
+            fold_metrics["outer_validation_rows"] = len(outer_validation_df)
+            fold_metrics["effective_inner_calibration_folds"] = (
+                effective_calibration_folds
+            )
         # Final flush/save for this fold.
         if logger is not None:
             if hasattr(logger, "save"):
@@ -534,11 +607,11 @@ def run_5fold_cv(
         # Store both
         fold_metrics["best_model_path"] = checkpoint_callback.best_model_path
         best_score = checkpoint_callback.best_model_score
-        fold_metrics["best_val_balanced_accuracy_checkpoint_score"] = (
+        fold_metrics["best_val_auc_roc_checkpoint_score"] = (
             float(best_score) if best_score is not None else float("nan")
         )
 
-        print(f"\nFold {fold} metrics:")
+        print(f"\nFold {fold} checkpoint-selection metrics:")
         for k, v in fold_metrics.items():
             if isinstance(v, float):
                 print(f"  {k}: {v:.4f}")

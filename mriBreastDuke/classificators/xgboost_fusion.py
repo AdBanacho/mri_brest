@@ -9,6 +9,8 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+from mriBreastDuke.threshold_tuning import predictions_at_threshold
+
 
 def aligned_predict_proba(model, features, num_classes):
     """Return predict_proba output aligned to integer labels 0..num_classes-1."""
@@ -51,11 +53,21 @@ def fuse_probabilities(image_probabilities, xgboost_probabilities, alpha=0.5):
     return fused / row_sums
 
 
-def probability_metrics(labels, probabilities, prefix):
+def probability_predictions(probabilities, threshold=None):
+    """Return argmax predictions or apply a tuned binary threshold."""
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    if threshold is None:
+        return np.argmax(probabilities, axis=1)
+    if probabilities.ndim != 2 or probabilities.shape[1] != 2:
+        raise ValueError("A decision threshold can only be used for binary probabilities.")
+    return predictions_at_threshold(probabilities[:, 1], threshold)
+
+
+def probability_metrics(labels, probabilities, prefix, threshold=None):
     """Calculate classification metrics for one probability matrix."""
     labels = np.asarray(labels)
     probabilities = np.asarray(probabilities, dtype=np.float64)
-    predictions = np.argmax(probabilities, axis=1)
+    predictions = probability_predictions(probabilities, threshold=threshold)
     sensitivity_options = (
         {"average": "binary", "pos_label": 1}
         if probabilities.shape[1] == 2
@@ -75,6 +87,8 @@ def probability_metrics(labels, probabilities, prefix):
             )
         ),
     }
+    if threshold is not None:
+        metrics[f"{prefix}_decision_threshold"] = float(threshold)
     if probabilities.shape[1] == 2:
         metrics[f"{prefix}_specificity"] = float(
             recall_score(
@@ -110,6 +124,7 @@ def save_fusion_predictions(
     fused_probabilities,
     output_path,
     tabular_model_name="xgboost",
+    decision_thresholds=None,
 ):
     """Save identifiers, branch probabilities, and fused predictions to CSV."""
     identifiers = {}
@@ -128,9 +143,19 @@ def save_fusion_predictions(
             xgboost_probabilities[:, class_index]
         )
         output[f"fusion_probability_{class_index}"] = fused_probabilities[:, class_index]
-    output["image_prediction"] = np.argmax(image_probabilities, axis=1)
-    output[f"{tabular_model_name}_prediction"] = np.argmax(
-        xgboost_probabilities, axis=1
+    decision_thresholds = decision_thresholds or {}
+    output["image_prediction"] = probability_predictions(
+        image_probabilities,
+        threshold=decision_thresholds.get("image"),
     )
-    output["fusion_prediction"] = np.argmax(fused_probabilities, axis=1)
+    output[f"{tabular_model_name}_prediction"] = probability_predictions(
+        xgboost_probabilities,
+        threshold=decision_thresholds.get(tabular_model_name),
+    )
+    output["fusion_prediction"] = probability_predictions(
+        fused_probabilities,
+        threshold=decision_thresholds.get("fusion"),
+    )
+    for branch_name, threshold in decision_thresholds.items():
+        output[f"{branch_name}_decision_threshold"] = float(threshold)
     output.to_csv(output_path, index=False)

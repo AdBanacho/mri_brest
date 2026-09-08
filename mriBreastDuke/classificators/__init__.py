@@ -3,6 +3,7 @@ from .Simple3DFCN import Simple3DFCN
 from .xgboost_fusion import (
     aligned_predict_proba,
     fuse_probabilities,
+    probability_predictions,
     probability_metrics,
     save_fusion_predictions,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "Simple3DFCN",
     "aligned_predict_proba",
     "fuse_probabilities",
+    "probability_predictions",
     "probability_metrics",
     "save_fusion_predictions",
 ]

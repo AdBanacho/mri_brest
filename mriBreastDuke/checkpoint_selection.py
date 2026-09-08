@@ -4,7 +4,14 @@ import re
 
 
 METRIC_VALUE_PATTERN = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
-BEST_CHECKPOINT_PATTERN = re.compile(
+AUC_CHECKPOINT_PATTERN = re.compile(
+    r"best-epoch=(?P<epoch>\d+)-"
+    rf"val_auc_roc=(?P<auc>{METRIC_VALUE_PATTERN})-"
+    rf"val_balanced_accuracy=(?P<balanced_accuracy>{METRIC_VALUE_PATTERN})-"
+    rf"val_sensitivity=(?P<sensitivity>{METRIC_VALUE_PATTERN})"
+    r"(?:-v\d+)?\.ckpt$"
+)
+BALANCED_CHECKPOINT_PATTERN = re.compile(
     r"best-epoch=(?P<epoch>\d+)-"
     rf"(?:val_balanced_accuracy=(?P<balanced_accuracy>{METRIC_VALUE_PATTERN})-)?"
     rf"val_sensitivity=(?P<sensitivity>{METRIC_VALUE_PATTERN})"
@@ -14,13 +21,25 @@ BEST_CHECKPOINT_PATTERN = re.compile(
 
 
 def checkpoint_score(path):
-    """Return a sortable score, preferring balanced-accuracy checkpoints.
+    """Return a sortable score, preferring current AUC checkpoints.
 
-    Checkpoints created before balanced accuracy was logged remain supported.
-    A current-format checkpoint always ranks ahead of a legacy checkpoint so
-    stale sensitivity-selected files cannot override a newly trained model.
+    Balanced-accuracy and sensitivity-era checkpoints remain supported. A
+    current AUC-format checkpoint always ranks ahead of an older format so a
+    stale checkpoint cannot override a newly trained model.
     """
-    match = BEST_CHECKPOINT_PATTERN.match(path.name)
+    match = AUC_CHECKPOINT_PATTERN.match(path.name)
+    if match is not None:
+        return (
+            1,
+            2,
+            float(match.group("auc")),
+            float(match.group("balanced_accuracy")),
+            float(match.group("sensitivity")),
+            int(match.group("epoch")),
+            path.stat().st_mtime,
+        )
+
+    match = BALANCED_CHECKPOINT_PATTERN.match(path.name)
     if match is None:
         return (
             0,
