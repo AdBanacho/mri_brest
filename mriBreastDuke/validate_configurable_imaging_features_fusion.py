@@ -2,8 +2,9 @@
 
 This module reconstructs the same patient-grouped folds as
 ``configurable_imaging_features_fusion_workflow``. It loads the saved MRI,
-preprocessor, and XGBoost/MLP artifacts, performs one MRI inference pass per
-fold, and reports image, tabular, and decision-fusion metrics.
+preprocessor, and XGBoost/MLP artifacts. For each outer fold, thresholds are
+selected only on the saved inner calibration split and then frozen before the
+untouched outer validation fold is evaluated.
 """
 
 import argparse
@@ -25,6 +26,7 @@ from mriBreastDuke.classificators import (
     NiftiClassifier,
     aligned_predict_proba,
     fuse_probabilities,
+    probability_predictions,
     probability_metrics,
     save_fusion_predictions,
 )
@@ -50,6 +52,10 @@ from mriBreastDuke.dataLoaders import (
     SUBTRACTION_MODES,
     SUBTRACTION_NONE,
     get_input_channels,
+)
+from mriBreastDuke.threshold_tuning import (
+    make_inner_calibration_split,
+    select_balanced_accuracy_threshold,
 )
 
 
@@ -98,6 +104,7 @@ def parse_args():
     parser.add_argument("--lasso_n_jobs", type=int, default=8)
 
     parser.add_argument("--num_folds", type=int, default=5)
+    parser.add_argument("--threshold_calibration_folds", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--positive_boost", type=float, default=1.0)
@@ -237,9 +244,107 @@ def _predict_image_probabilities(model, dataloader, num_classes, device):
     return np.concatenate(probabilities), np.concatenate(labels)
 
 
-def _save_confusion_matrix(labels, probabilities, output_path, title, normalize=False):
+def _predict_image_for_dataframe(model, dataframe, args, num_classes, device):
+    """Run one ordered inference pass and verify row/label alignment."""
+    datamodule = NiftiDataModule(
+        train_df=dataframe,
+        val_df=dataframe,
+        target_size=(256, 256, 64),
+        image_root=NIFTI_PATH,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        subtraction_mode=args.subtraction_mode,
+    )
+    datamodule.setup(stage="validate")
+    probabilities, labels = _predict_image_probabilities(
+        model,
+        datamodule.val_dataloader(),
+        num_classes=num_classes,
+        device=device,
+    )
+    expected_labels = dataframe["label"].to_numpy(dtype=np.int64)
+    if not np.array_equal(labels, expected_labels):
+        raise RuntimeError(
+            "MRI predictions are not aligned with their source DataFrame rows."
+        )
+    del datamodule
+    return probabilities, labels
+
+
+def _transform_tabular(preprocessor, feature_selector, model, dataframe, num_classes):
+    features = preprocessor.transform(dataframe)
+    if feature_selector is not None:
+        features = feature_selector.transform(features)
+    return aligned_predict_proba(model, features, num_classes=num_classes)
+
+
+def _validate_calibration_manifest(
+    path,
+    fit_df,
+    calibration_df,
+    requested_folds,
+    effective_folds,
+):
+    """Verify that validation reconstructed the exact split used in training."""
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing saved fold artifact: {path}")
+    manifest = pd.read_csv(path, dtype={"studyId": str})
+    required = {
+        "studyId",
+        "split",
+        "requested_inner_folds",
+        "effective_inner_folds",
+    }
+    missing = required.difference(manifest.columns)
+    if missing:
+        raise ValueError(f"Calibration manifest is missing columns: {sorted(missing)}")
+    if manifest["studyId"].duplicated().any():
+        raise ValueError("Calibration manifest contains duplicate studyId values.")
+    if not set(manifest["split"]).issubset({"fit", "calibration"}):
+        raise ValueError("Calibration manifest contains an unexpected split label.")
+
+    expected_roles = {
+        **{str(study_id): "fit" for study_id in fit_df["studyId"]},
+        **{
+            str(study_id): "calibration"
+            for study_id in calibration_df["studyId"]
+        },
+    }
+    actual_roles = {
+        str(row.studyId): row.split
+        for row in manifest[["studyId", "split"]].itertuples(index=False)
+    }
+    if actual_roles != expected_roles:
+        raise RuntimeError(
+            "The reconstructed inner calibration split does not match training."
+        )
+    if set(manifest["requested_inner_folds"]) != {requested_folds}:
+        raise RuntimeError("Calibration manifest requested-fold count does not match.")
+    if set(manifest["effective_inner_folds"]) != {effective_folds}:
+        raise RuntimeError("Calibration manifest effective-fold count does not match.")
+
+
+def _tune_branch_thresholds(labels, branch_probabilities):
+    thresholds = {}
+    rows = []
+    for branch_name, probabilities in branch_probabilities.items():
+        result = select_balanced_accuracy_threshold(labels, probabilities[:, 1])
+        thresholds[branch_name] = result["threshold"]
+        rows.append({"branch": branch_name, **result})
+    return thresholds, pd.DataFrame(rows)
+
+
+def _save_confusion_matrix(
+    labels,
+    probabilities,
+    output_path,
+    title,
+    normalize=False,
+    predictions=None,
+):
     num_classes = probabilities.shape[1]
-    predictions = np.argmax(probabilities, axis=1)
+    if predictions is None:
+        predictions = np.argmax(probabilities, axis=1)
     matrix = confusion_matrix(
         labels,
         predictions,
@@ -313,13 +418,20 @@ def _save_roc_curve(labels, probabilities, output_path, title):
     plt.close(fig)
 
 
-def _save_branch_charts(labels, probabilities, output_dir, title):
+def _save_branch_charts(
+    labels,
+    probabilities,
+    output_dir,
+    title,
+    predictions=None,
+):
     output_dir.mkdir(parents=True, exist_ok=True)
     _save_confusion_matrix(
         labels,
         probabilities,
         output_dir / "confusion_matrix.png",
         title=f"{title} Confusion Matrix",
+        predictions=predictions,
     )
     _save_confusion_matrix(
         labels,
@@ -327,6 +439,7 @@ def _save_branch_charts(labels, probabilities, output_dir, title):
         output_dir / "confusion_matrix_normalized.png",
         title=f"{title} Normalized Confusion Matrix",
         normalize=True,
+        predictions=predictions,
     )
     _save_roc_curve(
         labels,
@@ -365,27 +478,56 @@ def run_validation(args):
     )
     groups = studies["patientId"].to_numpy()
     metrics_per_fold = []
+    threshold_reports = []
     pooled = {
-        "image": {"labels": [], "probabilities": []},
-        args.feature_model: {"labels": [], "probabilities": []},
-        "fusion": {"labels": [], "probabilities": []},
+        "image": {"labels": [], "probabilities": [], "predictions": []},
+        args.feature_model: {
+            "labels": [],
+            "probabilities": [],
+            "predictions": [],
+        },
+        "fusion": {"labels": [], "probabilities": [], "predictions": []},
     }
+
+    if num_classes != 2:
+        raise ValueError("Decision-threshold tuning currently requires two classes.")
 
     for fold, (train_idx, val_idx) in enumerate(
         splitter.split(studies, labels, groups),
         start=1,
     ):
         print(f"\n========== Validation fold {fold}/{args.num_folds} ==========", flush=True)
-        train_df = studies.iloc[train_idx].reset_index(drop=True)
+        outer_train_df = studies.iloc[train_idx].reset_index(drop=True)
         val_df = studies.iloc[val_idx].reset_index(drop=True)
-        overlap = set(train_df["patientId"]).intersection(val_df["patientId"])
+        overlap = set(outer_train_df["patientId"]).intersection(val_df["patientId"])
         if overlap:
             raise RuntimeError(f"Patient leakage detected in fold {fold}.")
+
+        fit_idx, calibration_idx, effective_calibration_folds = (
+            make_inner_calibration_split(
+                outer_train_df["label"].to_numpy(dtype=np.int64),
+                groups=outer_train_df["patientId"].to_numpy(),
+                requested_folds=args.threshold_calibration_folds,
+                random_state=SEED + fold,
+            )
+        )
+        fit_df = outer_train_df.iloc[fit_idx].reset_index(drop=True)
+        calibration_df = outer_train_df.iloc[calibration_idx].reset_index(drop=True)
+        if set(fit_df["patientId"]).intersection(calibration_df["patientId"]):
+            raise RuntimeError(f"Inner patient leakage detected in fold {fold}.")
 
         checkpoint_dir = (
             checkpoint_root / experiment_name / f"fold_{fold}" / "checkpoints"
         )
         checkpoint_path = find_best_checkpoint(checkpoint_dir)
+        manifest_path = checkpoint_dir / "inner_calibration_split.csv"
+        _validate_calibration_manifest(
+            manifest_path,
+            fit_df=fit_df,
+            calibration_df=calibration_df,
+            requested_folds=args.threshold_calibration_folds,
+            effective_folds=effective_calibration_folds,
+        )
         preprocessor_path = checkpoint_dir / "tabular_preprocessor.joblib"
         tabular_model_path = checkpoint_dir / f"{args.feature_model}_model.joblib"
         artifact_paths = [preprocessor_path, tabular_model_path]
@@ -397,7 +539,7 @@ def run_validation(args):
                 raise FileNotFoundError(f"Missing saved fold artifact: {artifact_path}")
 
         class_weights = _compute_class_weights(
-            train_df["label"].to_numpy(dtype=np.int64),
+            fit_df["label"].to_numpy(dtype=np.int64),
             num_classes=num_classes,
             positive_boost=args.positive_boost,
         )
@@ -408,39 +550,46 @@ def run_validation(args):
             class_weights=class_weights,
             device=device,
         )
-        datamodule = NiftiDataModule(
-            train_df=val_df,
-            val_df=val_df,
-            target_size=(256, 256, 64),
-            image_root=NIFTI_PATH,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            subtraction_mode=args.subtraction_mode,
+        calibration_image_probabilities, calibration_labels = (
+            _predict_image_for_dataframe(
+                image_model,
+                calibration_df,
+                args,
+                num_classes=num_classes,
+                device=device,
+            )
         )
-        datamodule.setup(stage="validate")
-        image_probabilities, validation_labels = _predict_image_probabilities(
+        image_probabilities, validation_labels = _predict_image_for_dataframe(
             image_model,
-            datamodule.val_dataloader(),
+            val_df,
+            args,
             num_classes=num_classes,
             device=device,
         )
-        expected_labels = val_df["label"].to_numpy(dtype=np.int64)
-        if not np.array_equal(validation_labels, expected_labels):
-            raise RuntimeError(
-                "MRI predictions are not aligned with the tabular validation rows."
-            )
 
         preprocessor = joblib.load(preprocessor_path)
         tabular_model = joblib.load(tabular_model_path)
-        tabular_features = preprocessor.transform(val_df)
         tabular_feature_selector = None
         if args.feature_selector == "lasso":
             tabular_feature_selector = joblib.load(selector_path)
-            tabular_features = tabular_feature_selector.transform(tabular_features)
-        tabular_probabilities = aligned_predict_proba(
+        calibration_tabular_probabilities = _transform_tabular(
+            preprocessor,
+            tabular_feature_selector,
             tabular_model,
-            tabular_features,
+            calibration_df,
             num_classes=num_classes,
+        )
+        tabular_probabilities = _transform_tabular(
+            preprocessor,
+            tabular_feature_selector,
+            tabular_model,
+            val_df,
+            num_classes=num_classes,
+        )
+        calibration_fused_probabilities = fuse_probabilities(
+            calibration_image_probabilities,
+            calibration_tabular_probabilities,
+            alpha=args.fusion_alpha,
         )
         fused_probabilities = fuse_probabilities(
             image_probabilities,
@@ -448,27 +597,71 @@ def run_validation(args):
             alpha=args.fusion_alpha,
         )
 
+        calibration_branch_probabilities = {
+            "image": calibration_image_probabilities,
+            args.feature_model: calibration_tabular_probabilities,
+            "fusion": calibration_fused_probabilities,
+        }
+        decision_thresholds, threshold_report = _tune_branch_thresholds(
+            calibration_labels,
+            calibration_branch_probabilities,
+        )
+        threshold_report.insert(0, "fold", fold)
+        threshold_report["calibration_rows"] = len(calibration_df)
+        threshold_reports.append(threshold_report)
+
+        branch_probabilities = {
+            "image": image_probabilities,
+            args.feature_model: tabular_probabilities,
+            "fusion": fused_probabilities,
+        }
+        branch_predictions = {
+            branch_name: probability_predictions(
+                probabilities,
+                threshold=decision_thresholds[branch_name],
+            )
+            for branch_name, probabilities in branch_probabilities.items()
+        }
+
         fold_metrics = {
             "fold": fold,
             "checkpoint_path": str(checkpoint_path),
+            "inner_fit_rows": len(fit_df),
+            "inner_calibration_rows": len(calibration_df),
+            "effective_inner_calibration_folds": effective_calibration_folds,
+            "outer_validation_rows": len(val_df),
         }
-        fold_metrics.update(
-            probability_metrics(validation_labels, image_probabilities, "image")
-        )
-        fold_metrics.update(
-            probability_metrics(
-                validation_labels,
-                tabular_probabilities,
-                args.feature_model,
+        for branch_name, probabilities in branch_probabilities.items():
+            fold_metrics.update(
+                probability_metrics(
+                    validation_labels,
+                    probabilities,
+                    branch_name,
+                    threshold=decision_thresholds[branch_name],
+                )
             )
-        )
-        fold_metrics.update(
-            probability_metrics(validation_labels, fused_probabilities, "fusion")
-        )
         metrics_per_fold.append(fold_metrics)
 
         fold_output = output_root / f"fold_{fold}"
         fold_output.mkdir(parents=True, exist_ok=True)
+        threshold_report.to_csv(
+            fold_output / "threshold_calibration_metrics.csv",
+            index=False,
+        )
+        (fold_output / "decision_thresholds.json").write_text(
+            json.dumps(decision_thresholds, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        save_fusion_predictions(
+            calibration_df,
+            calibration_labels,
+            calibration_image_probabilities,
+            calibration_tabular_probabilities,
+            calibration_fused_probabilities,
+            fold_output / "threshold_calibration_predictions.csv",
+            tabular_model_name=args.feature_model,
+            decision_thresholds=decision_thresholds,
+        )
         save_fusion_predictions(
             val_df,
             validation_labels,
@@ -477,21 +670,21 @@ def run_validation(args):
             fused_probabilities,
             fold_output / "fusion_validation_predictions.csv",
             tabular_model_name=args.feature_model,
+            decision_thresholds=decision_thresholds,
         )
-        branch_probabilities = {
-            "image": image_probabilities,
-            args.feature_model: tabular_probabilities,
-            "fusion": fused_probabilities,
-        }
         for branch_name, probabilities in branch_probabilities.items():
             _save_branch_charts(
                 validation_labels,
                 probabilities,
                 fold_output / branch_name,
-                title=f"Fold {fold} {branch_name}",
+                title=f"Fold {fold} {branch_name} (tuned threshold)",
+                predictions=branch_predictions[branch_name],
             )
             pooled[branch_name]["labels"].append(validation_labels.copy())
             pooled[branch_name]["probabilities"].append(probabilities.copy())
+            pooled[branch_name]["predictions"].append(
+                branch_predictions[branch_name].copy()
+            )
 
         print(f"[Fold {fold}] checkpoint: {checkpoint_path}", flush=True)
         for metric_name, value in fold_metrics.items():
@@ -501,11 +694,9 @@ def run_validation(args):
         image_model.to("cpu")
         del (
             image_model,
-            datamodule,
             preprocessor,
             tabular_model,
             tabular_feature_selector,
-            tabular_features,
         )
         gc.collect()
         if torch.cuda.is_available():
@@ -515,12 +706,20 @@ def run_validation(args):
     for branch_name, branch_data in pooled.items():
         branch_labels = np.concatenate(branch_data["labels"])
         branch_probabilities = np.concatenate(branch_data["probabilities"])
+        branch_predictions = np.concatenate(branch_data["predictions"])
         _save_branch_charts(
             branch_labels,
             branch_probabilities,
             aggregate_output / branch_name,
-            title=f"Pooled {branch_name}",
+            title=f"Pooled {branch_name} (fold-specific tuned thresholds)",
+            predictions=branch_predictions,
         )
+
+    threshold_metrics_path = output_root / "threshold_calibration_metrics.csv"
+    pd.concat(threshold_reports, ignore_index=True).to_csv(
+        threshold_metrics_path,
+        index=False,
+    )
 
     metrics_path = output_root / "validation_metrics.csv"
     pd.DataFrame(metrics_per_fold).to_csv(metrics_path, index=False)
@@ -561,6 +760,7 @@ def run_validation(args):
     summary_path = output_root / "validation_summary.csv"
     pd.DataFrame(summary_rows).to_csv(summary_path, index=False)
     print(f"Metrics: {metrics_path}", flush=True)
+    print(f"Threshold calibration: {threshold_metrics_path}", flush=True)
     print(f"Summary: {summary_path}", flush=True)
     print(f"Configuration: {config_path}", flush=True)
     return metrics_per_fold

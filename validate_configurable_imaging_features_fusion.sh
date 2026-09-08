@@ -41,6 +41,7 @@ LASSO_MAX_ITER=${LASSO_MAX_ITER:-5000}
 LASSO_TOLERANCE=${LASSO_TOLERANCE:-1e-4}
 LASSO_MIN_FEATURES=${LASSO_MIN_FEATURES:-1}
 LASSO_N_JOBS=${LASSO_N_JOBS:-8}
+THRESHOLD_CALIBRATION_FOLDS=${THRESHOLD_CALIBRATION_FOLDS:-5}
 CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-/net/scratch/hscra/plgrid/plgabanacho/check_points}
 VALIDATION_OUTPUT_DIR=${VALIDATION_OUTPUT_DIR:-validation_charts}
 
@@ -96,6 +97,7 @@ echo "Subtraction: $SUBTRACTION"
 echo "Feature groups: $FEATURE_GROUPS_CSV"
 echo "Feature model: $FEATURE_MODEL"
 echo "Feature selector: $FEATURE_SELECTOR"
+echo "Threshold calibration folds: $THRESHOLD_CALIBRATION_FOLDS"
 echo "Batch size: $BATCH_SIZE"
 echo "Positive boost: $POSITIVE_BOOST"
 echo "Sensitivity lambda: $SENSITIVITY_LAMBDA"
@@ -117,6 +119,7 @@ python -m mriBreastDuke.validate_configurable_imaging_features_fusion \
     --lasso_tolerance "$LASSO_TOLERANCE" \
     --lasso_min_features "$LASSO_MIN_FEATURES" \
     --lasso_n_jobs "$LASSO_N_JOBS" \
+    --threshold_calibration_folds "$THRESHOLD_CALIBRATION_FOLDS" \
     --num_folds 5 \
     --batch_size "$BATCH_SIZE" \
     --num_workers 4 \
