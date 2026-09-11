@@ -183,6 +183,11 @@ def collect_results(
 
         feature_model = str(config.get("feature_model", "")) or None
         metrics = _canonicalize_tabular_metrics(metrics, feature_model)
+        metric_columns = [
+            column
+            for column in metrics.select_dtypes(include="number").columns
+            if column != "fold"
+        ]
         run_id = str(run_dir.relative_to(input_dir))
         metrics.insert(0, "run_id", run_id)
         for key, value in config.items():
@@ -204,11 +209,8 @@ def collect_results(
             "is_complete": complete,
         }
 
-        numeric = metrics.select_dtypes(include="number")
-        for column in numeric.columns:
-            if column == "fold":
-                continue
-            values = numeric[column].dropna()
+        for column in metric_columns:
+            values = metrics[column].dropna()
             if values.empty:
                 continue
             row[f"{column}_mean"] = float(values.mean())
