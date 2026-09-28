@@ -249,9 +249,10 @@ def build_experiment_name(args, selected_groups):
             f"_lasso-cv{args.lasso_cv_folds}-cs{args.lasso_cs}-"
             f"min{args.lasso_min_features}"
         )
+    clinical_suffix = "_clinical-safe-v2" if "clinical" in selected_groups else ""
     return (
         f"ImagingFeaturesFusion_{args.mri_model}_{args.subtraction_mode}_"
-        f"{'-'.join(selected_groups)}_{args.feature_model}{selector_suffix}_"
+        f"{'-'.join(selected_groups)}_{args.feature_model}{selector_suffix}{clinical_suffix}_"
         f"auc-cal{args.threshold_calibration_folds}_lr{args.lr:.0e}_"
         f"sens{args.sensitivity_lambda:g}_boost{args.positive_boost:g}_"
         f"bs{args.batch_size}"
