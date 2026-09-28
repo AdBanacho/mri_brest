@@ -20,6 +20,11 @@ validation_root = "@VALIDATION_CHART_PATH"
 # summary_root = "reports/fusion"  # Default: validation_root/summary
 slurm_logs = "logs"                 # Slurm stdout and stderr
 
+[cleanup]
+before_train = true     # Once, before submission: delete all checkpoint_root and logs_root contents
+before_validate = true  # Once, before submission: delete validation_root, including summary
+# If summary_root is outside validation_root, it is deleted too.
+
 [jobs]
 max_jobs = 0          # 0 = every training combination; 12 = first 12
 max_concurrent = 8    # Slurm array throttle for training and validation

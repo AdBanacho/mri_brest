@@ -12,6 +12,7 @@ import hashlib
 import itertools
 import json
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -86,7 +87,12 @@ def load_config(path: Path) -> dict:
     path = path.expanduser().resolve()
     with path.open("rb") as stream:
         config = tomllib.load(stream)
-    _keys(config, {"data", "paths", "jobs", "train", "validate", "summarize"}, "root")
+    _keys(config, {"data", "paths", "jobs", "train", "validate", "summarize", "cleanup"}, "root")
+    cleanup = config.get("cleanup", {})
+    _keys(cleanup, {"before_train", "before_validate"}, "cleanup")
+    for key, value in cleanup.items():
+        if type(value) is not bool:
+            raise ValueError(f"[cleanup].{key} must be true or false")
     data = config.get("data", {})
     _keys(data, {"seed", "target_size"}, "data")
     size = data.get("target_size", [256, 256, 64])
@@ -119,6 +125,7 @@ def load_config(path: Path) -> dict:
     config["validate"] = validate
     config["jobs"] = jobs
     config["summarize"] = config.get("summarize", {})
+    config["cleanup"] = cleanup
     return config
 
 
@@ -244,12 +251,59 @@ def _resources(config: dict, stage: str) -> dict:
     return result
 
 
+def _cleanup_targets(config: dict, stage: str) -> list[Path]:
+    enabled = config.get("cleanup", {}).get(
+        "before_train" if stage == "train" else "before_validate", False
+    )
+    if stage == "summarize" or not enabled:
+        return []
+    paths = config["paths"]
+    names = ("checkpoint_root", "logs_root") if stage == "train" else ("validation_root",)
+    missing = [name for name in names if name not in paths]
+    if missing:
+        raise ValueError(f"Cleanup requires explicit [paths] settings: {', '.join(missing)}")
+    targets = [Path(paths[name]).resolve() for name in names]
+    if stage == "validate" and "summary_root" in paths:
+        summary = Path(paths["summary_root"]).resolve()
+        if summary not in targets[0].parents and summary != targets[0] and targets[0] not in summary.parents:
+            targets.append(summary)
+        elif summary in targets[0].parents:
+            raise ValueError("summary_root cannot contain validation_root when cleanup is enabled")
+
+    protected_names = ("clinical_features_file", "metadata_file", "imaging_features_file",
+                       "annotation_boxes_file", "image_root", "prepared_root", "subtraction_root")
+    protected = [Path(paths[key]).resolve() for key in protected_names if key in paths]
+    slurm_logs = Path(paths.get("slurm_logs", str(ROOT / "logs"))).resolve()
+    outputs = [Path(paths[key]).resolve() for key in
+               ("checkpoint_root", "logs_root", "validation_root") if key in paths]
+    for target in targets:
+        if (len(target.parts) < 4 or target == ROOT or target in ROOT.parents
+                or target == Path.home() or target in Path.home().parents):
+            raise ValueError(f"Refusing to clean a broad or protected directory: {target}")
+        if any(target == item or target in item.parents for item in protected):
+            raise ValueError(f"Cleanup directory contains a configured input: {target}")
+        if target == slurm_logs or target in slurm_logs.parents or slurm_logs in target.parents:
+            raise ValueError(f"Cleanup directory overlaps Slurm logs/snapshots: {target}")
+        if any(target != item and (target in item.parents or item in target.parents)
+               for item in outputs):
+            raise ValueError(f"Cleanup directory overlaps another output root: {target}")
+        if target.exists() and not target.is_dir():
+            raise ValueError(f"Cleanup target is not a directory: {target}")
+    if len(targets) > 1 and any(
+        left == right or left in right.parents or right in left.parents
+        for index, left in enumerate(targets) for right in targets[index + 1:]
+    ):
+        raise ValueError("Cleanup directories must not overlap")
+    return targets
+
+
 def submit(config: dict, config_path: Path, stage: str, dry_run: bool) -> None:
     count = (1 if stage == "summarize" else
              len(_train_configs(config)) if stage == "train" else len(_validation_configs(config)))
     if not count:
         raise ValueError("The job grid is empty")
     resources = _resources(config, stage)
+    cleanup_targets = _cleanup_targets(config, stage)
     logs = Path(config["paths"].get("slurm_logs", str(ROOT / "logs")))
     snapshot = json.dumps(config, sort_keys=True, indent=2) + "\n"
     snapshot_hash = hashlib.sha256(snapshot.encode()).hexdigest()[:16]
@@ -277,6 +331,8 @@ def submit(config: dict, config_path: Path, stage: str, dry_run: bool) -> None:
         command.append(f"--array=0-{count - 1}%{config['jobs'].get('max_concurrent', 8)}")
     if dry_run:
         print(f"{stage}: {count} job(s), max concurrent {config['jobs'].get('max_concurrent', 8)}")
+        for target in cleanup_targets:
+            print("Would remove before submission:", target)
         print("Submission:", shlex.join(command), "<generated-script>")
         print("Example task 0:", shlex.join(task_command(config, stage, 0)))
         return
@@ -286,6 +342,10 @@ def submit(config: dict, config_path: Path, stage: str, dry_run: bool) -> None:
             raise ValueError(f"Snapshot hash collision at {snapshot_path}")
     else:
         snapshot_path.write_text(snapshot, encoding="utf-8")
+    for target in cleanup_targets:
+        if target.exists():
+            print(f"Removing previous {stage} output: {target}", flush=True)
+            shutil.rmtree(target)
     completed = subprocess.run(command, input="\n".join(script) + "\n", text=True, check=True, capture_output=True)
     print(f"Submitted {stage}: {count} job(s), Slurm ID {completed.stdout.strip()}")
     print(f"Resolved configuration: {snapshot_path}")

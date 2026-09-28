@@ -22,6 +22,17 @@ Each submission saves a resolved `experiment-<hash>.json` under `slurm_logs`;
 queued tasks read this snapshot, so later TOML edits cannot change an active
 array. Keep that snapshot with the corresponding results for provenance.
 
+`[cleanup].before_train = true` removes the configured checkpoint and
+TensorBoard log directories **once before the training array is submitted**.
+`[cleanup].before_validate = true` removes the validation directory, including
+its summary, **once before the validation array is submitted**. A separate
+`summary_root` is removed too. These flags are enabled in the example config;
+set either to `false` to retain earlier results. A dry run lists the exact
+directories and never removes them. The runner rejects broad directories,
+configured input paths, and overlapping output/Slurm log paths. Run stages in
+order: submitting a new training array after validation will remove the old
+checkpoints, and submitting validation again will remove its prior results.
+
 ## Editing the grid
 
 Values in `[train]` are fixed, while arrays in `[train.grid]` form a Cartesian
