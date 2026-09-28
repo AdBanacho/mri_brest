@@ -1,4 +1,4 @@
-from monai.networks.nets import DenseNet121, resnet18
+from monai.networks.nets import DenseNet121, resnet10, resnet18
 import pytorch_lightning as pl
 import argparse
 from numbers import Number
@@ -20,9 +20,9 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=int,
-        choices=(0, 1, 2),
+        choices=(0, 1, 2, 3),
         default=0,
-        help="0=FCN, 1=DenseNet121, 2=ResNet18",
+        help="0=FCN, 1=DenseNet121, 2=ResNet18, 3=ResNet10",
     )
     parser.add_argument("--epoch", type=int, default=50)
     parser.add_argument("--is_binary_classification", type=bool, default=False)
@@ -100,6 +100,20 @@ def main():
             f"ResNet18_{run_name_suffix}",
             lambda class_weights=None: NiftiClassifier(
                 resnet18(
+                    spatial_dims=3,
+                    n_input_channels=input_channels,
+                    num_classes=num_classes,
+                ),
+                num_classes,
+                lr=args.lr,
+                class_weights=class_weights,
+                sensitivity_lambda=args.sensitivity_lambda,
+            ),
+        ),
+        (
+            f"ResNet10_{run_name_suffix}",
+            lambda class_weights=None: NiftiClassifier(
+                resnet10(
                     spatial_dims=3,
                     n_input_channels=input_channels,
                     num_classes=num_classes,

@@ -99,10 +99,10 @@ mlp_max_iter = 500
 [train.trainer_extra]
 # precision = "16-mixed"
 
-# Cartesian product: 2 * 2 * 2 * 2 * 1 * 2 * 1 * 1 = 32 jobs.
+# Cartesian product: 3 * 2 * 2 * 2 * 1 * 2 * 1 * 1 = 48 jobs.
 # A one-value array still means "sweep this option" and is easy to extend.
 [train.grid]
-mri_model = ["densenet121", "resnet18"]
+mri_model = ["densenet121", "resnet10", "resnet18"]
 subtraction_mode = ["none", "post_minus_pre"]
 feature_groups = [["clinical"], ["clinical", "kinetic", "morphology", "heterogeneity"]]
 feature_model = ["xgboost", "mlp"]

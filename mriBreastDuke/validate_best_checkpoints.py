@@ -5,7 +5,7 @@ import math
 import os
 from typing import List
 
-from monai.networks.nets import DenseNet121, resnet18
+from monai.networks.nets import DenseNet121, resnet10, resnet18
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import confusion_matrix, roc_curve, auc
 from sklearn.preprocessing import label_binarize
@@ -38,9 +38,9 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=int,
-        choices=(0, 1, 2),
+        choices=(0, 1, 2, 3),
         default=0,
-        help="0=FCN, 1=DenseNet121, 2=ResNet18",
+        help="0=FCN, 1=DenseNet121, 2=ResNet18, 3=ResNet10",
     )
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--sensitivity_lambda", type=float, default=None)
@@ -656,6 +656,20 @@ def main():
             "ResNet18",
             lambda class_weights=None: NiftiClassifier(
                 resnet18(
+                    spatial_dims=3,
+                    n_input_channels=input_channels,
+                    num_classes=num_classes,
+                ),
+                num_classes,
+                lr=validation_lr,
+                class_weights=class_weights,
+                sensitivity_lambda=validation_sensitivity_lambda,
+            ),
+        ),
+        (
+            "ResNet10",
+            lambda class_weights=None: NiftiClassifier(
+                resnet10(
                     spatial_dims=3,
                     n_input_channels=input_channels,
                     num_classes=num_classes,
