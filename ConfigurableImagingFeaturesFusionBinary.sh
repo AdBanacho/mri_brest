@@ -8,7 +8,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --account=plgvirtudrel2026-gpu-gh200
 #SBATCH --partition=plgrid-gpu-gh200
-#SBATCH --array=0-31%8
+#SBATCH --array=0-63%8
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 
@@ -27,12 +27,14 @@ MRI_MODELS=(densenet121 resnet18)
 SUBTRACTIONS=(none post_minus_pre)
 FEATURE_GROUP_SETS=("clinical" "clinical,kinetic,morphology,heterogeneity")
 FEATURE_MODELS=(xgboost mlp)
+DENSITY_MODES=(none majority)
 BATCH_SIZES=(4)
 POS_BOOSTS=(1.0 2.0)
 SENS_LAMBDAS=(0.05)
 LRS=(1e-4)
 
 IMAGING_FEATURES_FILE=${IMAGING_FEATURES_FILE:-/net/home/plgrid/plgabanacho/mri_brest/mriBreastDuke/features/Imaging_Features.xlsx}
+DENSITY_FILE=${DENSITY_FILE:-mriBreastDuke/features/Breast_Radiologist_Density_Assessments.xlsx}
 FEATURE_SELECTOR=${FEATURE_SELECTOR:-lasso}
 LASSO_CV_FOLDS=${LASSO_CV_FOLDS:-5}
 LASSO_CS=${LASSO_CS:-20}
@@ -55,11 +57,12 @@ N_MRI=${#MRI_MODELS[@]}
 N_SUB=${#SUBTRACTIONS[@]}
 N_GROUPS=${#FEATURE_GROUP_SETS[@]}
 N_FEATURE_MODEL=${#FEATURE_MODELS[@]}
+N_DENSITY=${#DENSITY_MODES[@]}
 N_BS=${#BATCH_SIZES[@]}
 N_BOOST=${#POS_BOOSTS[@]}
 N_SENS=${#SENS_LAMBDAS[@]}
 N_LR=${#LRS[@]}
-TOTAL_CONFIGS=$(( N_MRI * N_SUB * N_GROUPS * N_FEATURE_MODEL * N_BS * N_BOOST * N_SENS * N_LR ))
+TOTAL_CONFIGS=$(( N_MRI * N_SUB * N_GROUPS * N_FEATURE_MODEL * N_BS * N_BOOST * N_SENS * N_LR * N_DENSITY ))
 
 if (( SLURM_ARRAY_TASK_ID < 0 || SLURM_ARRAY_TASK_ID >= TOTAL_CONFIGS )); then
     echo "Task $SLURM_ARRAY_TASK_ID is outside the grid 0-$((TOTAL_CONFIGS - 1))"
@@ -75,8 +78,10 @@ FEATURE_MODEL_IDX=$(( IDX % N_FEATURE_MODEL )); IDX=$(( IDX / N_FEATURE_MODEL ))
 GROUP_IDX=$(( IDX % N_GROUPS )); IDX=$(( IDX / N_GROUPS ))
 SUB_IDX=$(( IDX % N_SUB )); IDX=$(( IDX / N_SUB ))
 MRI_IDX=$(( IDX % N_MRI ))
+DENSITY_IDX=$(( IDX / N_MRI ))
 
 MRI_MODEL=${MRI_MODELS[$MRI_IDX]}
+DENSITY_MODE=${DENSITY_MODES[$DENSITY_IDX]}
 SUBTRACTION=${SUBTRACTIONS[$SUB_IDX]}
 FEATURE_GROUPS_CSV=${FEATURE_GROUP_SETS[$GROUP_IDX]}
 FEATURE_MODEL=${FEATURE_MODELS[$FEATURE_MODEL_IDX]}
@@ -94,6 +99,10 @@ if [[ "$FEATURE_GROUPS_CSV" != "clinical" ]]; then
     fi
     IMAGING_ARGS=(--imaging_features_file "$IMAGING_FEATURES_FILE")
 fi
+if [[ "$DENSITY_MODE" != none && ! -s "$DENSITY_FILE" ]]; then
+    echo "Missing radiologist density workbook: $DENSITY_FILE" >&2
+    exit 3
+fi
 
 echo "========================================"
 echo "Imaging_Features.xlsx fusion experiment"
@@ -102,6 +111,7 @@ echo "MRI model: $MRI_MODEL"
 echo "Subtraction: $SUBTRACTION"
 echo "Feature groups: $FEATURE_GROUPS_CSV"
 echo "Feature model: $FEATURE_MODEL"
+echo "Radiologist density mode: $DENSITY_MODE"
 echo "Feature selector: $FEATURE_SELECTOR"
 echo "Threshold calibration folds: $THRESHOLD_CALIBRATION_FOLDS"
 echo "Batch size: $BATCH_SIZE"
@@ -115,6 +125,8 @@ python -m mriBreastDuke.configurable_imaging_features_fusion_workflow \
     --subtraction_mode "$SUBTRACTION" \
     --feature_groups "${FEATURE_GROUP_ARGS[@]}" \
     --feature_model "$FEATURE_MODEL" \
+    --density_mode "$DENSITY_MODE" \
+    --density_file "$DENSITY_FILE" \
     --feature_selector "$FEATURE_SELECTOR" \
     --lasso_cv_folds "$LASSO_CV_FOLDS" \
     --lasso_cs "$LASSO_CS" \

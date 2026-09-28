@@ -24,6 +24,7 @@ from .lasso_feature_selection import (
 from .NiftiDataModule import NiftiDataModule
 from .NiftiDataset import NiftiDataset
 from .precomputed_imaging_features import IMAGING_FEATURE_GROUPS, merge_precomputed_imaging_features
+from .radiologist_density import DENSITY_MODES, merge_radiologist_density
 
 __all__ = [
     "get_oncotype_score_for_series_as_serie_and_label_df",
@@ -43,5 +44,7 @@ __all__ = [
     "LassoFeatureSelector",
     "save_lasso_feature_importance_chart",
     "IMAGING_FEATURE_GROUPS",
-    "merge_precomputed_imaging_features"
+    "merge_precomputed_imaging_features",
+    "DENSITY_MODES",
+    "merge_radiologist_density",
 ]

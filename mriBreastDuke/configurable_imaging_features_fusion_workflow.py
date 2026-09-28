@@ -10,14 +10,16 @@ from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
 
 from mriBreastDuke.classificators import NiftiClassifier, Simple3DFCN
-from mriBreastDuke.constants import ANNOTATION_BOXES_FILE_NAME, IMAGING_FEATURES_FILE_NAME, SEED
+from mriBreastDuke.constants import ANNOTATION_BOXES_FILE_NAME, IMAGING_FEATURES_FILE_NAME, RADIOLOGIST_DENSITY_FILE_NAME, SEED
 from mriBreastDuke.dataLoaders import (
     CLINICAL_PREDICTOR_COLUMNS,
     IMAGING_FEATURE_GROUPS,
+    DENSITY_MODES,
     LassoFeatureSelector,
     SENSITIVE_CLINICAL_PREDICTOR_COLUMNS,
     get_oncotype_clinical_predictors_as_study_df,
     merge_precomputed_imaging_features,
+    merge_radiologist_density,
     SUBTRACTION_MODES,
     SUBTRACTION_NONE,
     get_input_channels,
@@ -70,6 +72,11 @@ def parse_args():
         help="Path to Imaging_Features.xlsx or its CSV export.",
     )
     parser.add_argument("--imaging_patient_id_column", default="Patient ID")
+    parser.add_argument(
+        "--density_mode", choices=DENSITY_MODES, default="none",
+        help="Tabular BI-RADS density: off, three-reader majority, or one reader (default: none).",
+    )
+    parser.add_argument("--density_file", default=RADIOLOGIST_DENSITY_FILE_NAME)
     parser.add_argument("--allow_missing_imaging_features", action="store_true")
     parser.add_argument("--include_sensitive", action="store_true")
     parser.add_argument("--use_annotation_boxes", action="store_true", help="Use matched boxes for training-only lesion-preserving background masking (default: off).")
@@ -238,6 +245,12 @@ def prepare_studies_and_features(args):
         )
         continuous_columns.extend(imaging_columns)
 
+    if args.density_mode != "none":
+        studies, density_column = merge_radiologist_density(
+            studies, path=args.density_file, mode=args.density_mode
+        )
+        categorical_columns.append(density_column)
+
     return studies, continuous_columns, categorical_columns, selected_groups
 
 
@@ -250,9 +263,10 @@ def build_experiment_name(args, selected_groups):
             f"min{args.lasso_min_features}"
         )
     clinical_suffix = "_clinical-safe-v2" if "clinical" in selected_groups else ""
+    density_suffix = f"_density-{args.density_mode}" if args.density_mode != "none" else ""
     return (
         f"ImagingFeaturesFusion_{args.mri_model}_{args.subtraction_mode}_"
-        f"{'-'.join(selected_groups)}_{args.feature_model}{selector_suffix}{clinical_suffix}_"
+        f"{'-'.join(selected_groups)}_{args.feature_model}{selector_suffix}{clinical_suffix}{density_suffix}_"
         f"auc-cal{args.threshold_calibration_folds}_lr{args.lr:.0e}_"
         f"sens{args.sensitivity_lambda:g}_boost{args.positive_boost:g}_"
         f"bs{args.batch_size}"
