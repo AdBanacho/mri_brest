@@ -8,7 +8,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --account=plgvirtudrel2026-gpu-gh200
 #SBATCH --partition=plgrid-gpu-gh200
-#SBATCH --array=0-31%8
+#SBATCH --array=0-47%8
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 
@@ -23,7 +23,7 @@ cd /net/home/plgrid/plgabanacho/mri_brest
 pip install -e .
 pip install --no-cache-dir xgboost pytorch-lightning==2.5.6 torchmetrics==1.8.2 monai pandas 'scikit-learn>=1.7,<2' nibabel filelock openpyxl tensorboard matplotlib
 
-MRI_MODELS=(densenet121 resnet18)
+MRI_MODELS=(densenet121 resnet10 resnet18)
 SUBTRACTIONS=(none post_minus_pre)
 FEATURE_GROUP_SETS=("clinical" "clinical,kinetic,morphology,heterogeneity")
 FEATURE_MODELS=(xgboost mlp)

@@ -5,7 +5,7 @@ import json
 import math
 from numbers import Number
 
-from monai.networks.nets import DenseNet121, resnet18
+from monai.networks.nets import DenseNet121, resnet10, resnet18
 import pytorch_lightning as pl
 from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
@@ -30,7 +30,7 @@ from mriBreastDuke.dataLoaders import (
 from mriBreastDuke.n_fold_cv_run import run_5fold_cv
 
 
-MRI_MODELS = ("fcn", "densenet121", "resnet18")
+MRI_MODELS = ("fcn", "densenet121", "resnet10", "resnet18")
 FEATURE_GROUPS = ("clinical", *IMAGING_FEATURE_GROUPS)
 FEATURE_MODELS = ("xgboost", "mlp")
 FEATURE_SELECTORS = ("none", "lasso")
@@ -164,12 +164,15 @@ def make_mri_network(model_name, input_channels, num_classes, extra=None):
             out_channels=num_classes,
             **extra,
         )
-    return resnet18(
-        spatial_dims=3,
-        n_input_channels=input_channels,
-        num_classes=num_classes,
-        **extra,
-    )
+    if model_name in ("resnet10", "resnet18"):
+        constructor = resnet10 if model_name == "resnet10" else resnet18
+        return constructor(
+            spatial_dims=3,
+            n_input_channels=input_channels,
+            num_classes=num_classes,
+            **extra,
+        )
+    raise ValueError(f"Unknown MRI model: {model_name}")
 
 
 def _parse_hidden_layers(value):

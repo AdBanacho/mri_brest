@@ -15,9 +15,10 @@ class ExperimentRunnerTest(unittest.TestCase):
         cls.config = runner.load_config(Path(__file__).with_name("experiment.toml"))
 
     def test_training_and_validation_share_ids(self):
-        self.assertEqual(len(runner._train_configs(self.config)), 32)
-        self.assertEqual(len(runner._validation_configs(self.config)), 32)
-        for index in range(32):
+        self.assertEqual(len(runner._train_configs(self.config)), 48)
+        self.assertEqual(len(runner._validation_configs(self.config)), 48)
+        self.assertIn("resnet10", {c["mri_model"] for c in runner._train_configs(self.config)})
+        for index in range(48):
             train = runner.task_command(self.config, "train", index)
             validate = runner.task_command(self.config, "validate", index)
             self.assertEqual(train[train.index("--experiment_id") + 1],

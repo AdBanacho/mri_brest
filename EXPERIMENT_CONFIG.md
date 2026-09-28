@@ -39,6 +39,9 @@ Values in `[train]` are fixed, while arrays in `[train.grid]` form a Cartesian
 product. To try multiple LASSO settings, add `lasso_cs = [10, 20]` to the grid;
 it overrides the fixed `lasso_cs` for each configuration. `feature_groups`
 needs an array of arrays: `[["clinical"], ["kinetic", "morphology"]]`.
+The `mri_model` grid accepts `fcn`, `densenet121`, `resnet10`, and `resnet18`.
+The example includes ResNet-10 and schedules 48 training configurations; edit
+the model list to run only the backbones you want.
 `[validate.grid]` sweeps `fusion_alpha` and optionally validation
 `num_workers`. It is combined with each selected training configuration.
 `max_jobs = 0` runs every training combination; a positive value selects the
