@@ -158,8 +158,8 @@ def read_patient_id_for_oncotype_score_not_na(
     return subset[["patientId", "oncotypeCategory"]]
 
 
-def read_study_instance_for_patient_ids(patient_ids):
-    images_metadata_file = base_path(IMAGES_METADATA)
+def read_study_instance_for_patient_ids(patient_ids, metadata_file=IMAGES_METADATA):
+    images_metadata_file = base_path(metadata_file)
     data = pd.read_excel(images_metadata_file, sheet_name="Metadata", header=0)
 
     data.rename(
@@ -198,9 +198,11 @@ def get_unique_study_instance_for_oncotype_score_as_not_na():
     return set(read_study_instance_for_patient_ids(patient_ids).studyId)
 
 
-def get_oncotype_score_for_series(isBinary: bool):
-    patient_ids = read_patient_id_for_oncotype_score_not_na(isBinary)
-    return read_study_instance_for_patient_ids(patient_ids)
+def get_oncotype_score_for_series(
+    isBinary: bool, features_file=TARGETS_FILE_NAME, metadata_file=IMAGES_METADATA
+):
+    patient_ids = read_patient_id_for_oncotype_score_not_na(isBinary, features_file)
+    return read_study_instance_for_patient_ids(patient_ids, metadata_file)
 
 
 def get_oncotype_score_for_series_as_serie_and_label_df(
@@ -221,8 +223,10 @@ def get_oncotype_score_for_series_as_serie_and_label_df(
     return df
 
 
-def get_oncotype_score_for_series_as_studyId_and_label_df(isBinary: bool):
-    data = get_oncotype_score_for_series(isBinary)
+def get_oncotype_score_for_series_as_studyId_and_label_df(
+    isBinary: bool, features_file=TARGETS_FILE_NAME, metadata_file=IMAGES_METADATA
+):
+    data = get_oncotype_score_for_series(isBinary, features_file, metadata_file)
 
     series_count = data.groupby("studyId")["seriesId"].nunique()
     # All configured workflows, including subtraction, share this study table.
@@ -248,9 +252,12 @@ def get_oncotype_clinical_predictors_as_study_df(
     features_file=TARGETS_FILE_NAME,
     include_sensitive=False,
     include_oncotype_score=False,
+    metadata_file=IMAGES_METADATA,
 ):
     """Return one row per MRI study with series, label, and clinical features."""
-    studies = get_oncotype_score_for_series_as_studyId_and_label_df(isBinary)
+    studies = get_oncotype_score_for_series_as_studyId_and_label_df(
+        isBinary, features_file, metadata_file
+    )
     clinical = read_useful_clinical_predictors(
         features_file=features_file,
         oncotype_only=True,

@@ -38,12 +38,17 @@ from mriBreastDuke.configurable_imaging_features_fusion_workflow import (
     MRI_MODELS,
     build_experiment_name,
     make_mri_network,
+    _extra_options,
     prepare_studies_and_features,
 )
 from mriBreastDuke.constants import (
     CHECKPOINTS_PATH,
     IMAGING_FEATURES_FILE_NAME,
+    IMAGES_METADATA,
+    TARGETS_FILE_NAME,
     NIFTI_PATH,
+    PREPARED_TO_TRAIN_PATH,
+    SUBTRACTION_PATH,
     SEED,
     VALIDATION_CHART_PATH,
 )
@@ -100,6 +105,15 @@ def parse_args():
     parser.add_argument("--include_sensitive", action="store_true")
     parser.add_argument("--use_annotation_boxes", action="store_true", help="Audit annotation matching for an annotation-trained experiment; never supplies boxes to predictions.")
     parser.add_argument("--annotation_boxes_file", default=ANNOTATION_BOXES_FILE_NAME)
+    parser.add_argument("--clinical_features_file", default=TARGETS_FILE_NAME)
+    parser.add_argument("--metadata_file", default=IMAGES_METADATA)
+    parser.add_argument("--image_root", default=NIFTI_PATH)
+    parser.add_argument("--prepared_root", default=PREPARED_TO_TRAIN_PATH)
+    parser.add_argument("--subtraction_root", default=SUBTRACTION_PATH)
+    parser.add_argument("--target_size", type=int, nargs=3, default=(256, 256, 64))
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--experiment_id", default="")
+    parser.add_argument("--mri_extra_json", default="{}")
     parser.add_argument("--lasso_cv_folds", type=int, default=5)
     parser.add_argument("--lasso_cs", type=int, default=20)
     parser.add_argument("--lasso_max_iter", type=int, default=5000)
@@ -204,6 +218,7 @@ def _load_image_model(args, checkpoint_path, num_classes, class_weights, device)
         args.mri_model,
         input_channels=get_input_channels(args.subtraction_mode),
         num_classes=num_classes,
+        extra=_extra_options(args.mri_extra_json, "mri_extra_json"),
     )
     model = NiftiClassifier(
         network,
@@ -253,8 +268,10 @@ def _predict_image_for_dataframe(model, dataframe, args, num_classes, device):
     datamodule = NiftiDataModule(
         train_df=dataframe,
         val_df=dataframe,
-        target_size=(256, 256, 64),
-        image_root=NIFTI_PATH,
+        target_size=tuple(args.target_size),
+        image_root=args.image_root,
+        prepared_root=args.prepared_root,
+        subtraction_root=args.subtraction_root,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         subtraction_mode=args.subtraction_mode,
@@ -470,7 +487,7 @@ def run_validation(args):
     )
     if args.use_annotation_boxes:
         _, coverage = annotation_coverage(
-            studies, load_annotation_boxes(args.annotation_boxes_file), image_root=NIFTI_PATH
+            studies, load_annotation_boxes(args.annotation_boxes_file), image_root=args.image_root
         )
         coverage.to_csv(output_root / "annotation_coverage.csv", index=False)
         print(f"[ANNOTATIONS] {coverage.status.value_counts().to_dict()}", flush=True)
@@ -484,7 +501,7 @@ def run_validation(args):
     splitter = StratifiedGroupKFold(
         n_splits=args.num_folds,
         shuffle=True,
-        random_state=SEED,
+        random_state=args.seed,
     )
     groups = studies["patientId"].to_numpy()
     metrics_per_fold = []
@@ -518,7 +535,7 @@ def run_validation(args):
                 outer_train_df["label"].to_numpy(dtype=np.int64),
                 groups=outer_train_df["patientId"].to_numpy(),
                 requested_folds=args.threshold_calibration_folds,
-                random_state=SEED + fold,
+                random_state=args.seed + fold,
             )
         )
         fit_df = outer_train_df.iloc[fit_idx].reset_index(drop=True)
@@ -777,9 +794,10 @@ def run_validation(args):
 
 
 def main():
-    run_validation(parse_args())
+    args = parse_args()
+    pl.seed_everything(args.seed)
+    run_validation(args)
 
 
 if __name__ == "__main__":
-    pl.seed_everything(SEED)
     main()

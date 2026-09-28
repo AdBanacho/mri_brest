@@ -11,3 +11,4 @@ lightning_logs
 __pycache__/
 *.pyc
 /logs
+/validation_charts

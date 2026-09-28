@@ -13,7 +13,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 
-from mriBreastDuke.constants import SEED, LIGHTING_LOGS, NIFTI_PATH, CHECKPOINTS_PATH
+from mriBreastDuke.constants import SEED, LIGHTING_LOGS, NIFTI_PATH, CHECKPOINTS_PATH, PREPARED_TO_TRAIN_PATH, SUBTRACTION_PATH
 from mriBreastDuke.dataLoaders import (
     ClinicalFeaturePreprocessor,
     NiftiDataModule,
@@ -218,6 +218,14 @@ def run_5fold_cv(
     inner_calibration_folds=None,
     use_annotation_boxes=False,
     annotation_boxes_file=ANNOTATION_BOXES_FILE_NAME,
+    image_root=NIFTI_PATH,
+    prepared_root=PREPARED_TO_TRAIN_PATH,
+    subtraction_root=SUBTRACTION_PATH,
+    logs_root=LIGHTING_LOGS,
+    checkpoints_root=CHECKPOINTS_PATH,
+    target_size=(256, 256, 64),
+    seed=SEED,
+    trainer_extra=None,
 ):
     """Train MRI and optional tabular branches in leakage-safe CV folds.
 
@@ -262,13 +270,13 @@ def run_5fold_cv(
         skf = StratifiedGroupKFold(
             n_splits=num_folds,
             shuffle=True,
-            random_state=SEED,
+            random_state=seed,
         )
     else:
-        skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=SEED)
+        skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
 
-    logs_root = _resolve_output_dir(LIGHTING_LOGS)
-    checkpoints_root = _resolve_output_dir(CHECKPOINTS_PATH)
+    logs_root = _resolve_output_dir(logs_root)
+    checkpoints_root = _resolve_output_dir(checkpoints_root)
 
     print(f"[LOGS] TensorBoard root: {logs_root}", flush=True)
     print(f"[CKPT] Checkpoint root: {checkpoints_root}", flush=True)
@@ -279,7 +287,7 @@ def run_5fold_cv(
     annotation_report = None
     if use_annotation_boxes:
         annotation_mapping, annotation_report = annotation_coverage(
-            df, load_annotation_boxes(annotation_boxes_file), image_root=NIFTI_PATH
+            df, load_annotation_boxes(annotation_boxes_file), image_root=image_root
         )
         print(f"[ANNOTATIONS] {annotation_report.status.value_counts().to_dict()}", flush=True)
         if not annotation_mapping:
@@ -319,7 +327,7 @@ def run_5fold_cv(
                     outer_train_df["label"].to_numpy(dtype=np.int64),
                     groups=inner_groups,
                     requested_folds=inner_calibration_folds,
-                    random_state=SEED + fold,
+                    random_state=seed + fold,
                 )
             )
             train_df = outer_train_df.iloc[fit_idx].reset_index(drop=True)
@@ -389,8 +397,10 @@ def run_5fold_cv(
         datamodule = NiftiDataModule(
             train_df=train_df,
             val_df=val_df,
-            target_size=(256, 256, 64),
-            image_root=NIFTI_PATH,
+            target_size=target_size,
+            image_root=image_root,
+            prepared_root=prepared_root,
+            subtraction_root=subtraction_root,
             batch_size=batch_size,
             num_workers=num_workers,
             subtraction_mode=subtraction_mode,
@@ -555,7 +565,7 @@ def run_5fold_cv(
             verbose=True,
         )
 
-        trainer = pl.Trainer(
+        trainer_options = dict(
             max_epochs=epoch,
             accelerator="gpu" if torch.cuda.is_available() else "cpu",
             devices=1,
@@ -570,6 +580,11 @@ def run_5fold_cv(
             log_every_n_steps=1,
             enable_progress_bar=True,
         )
+        protected = {"callbacks", "logger", "default_root_dir"}
+        if protected.intersection(trainer_extra or {}):
+            raise ValueError(f"trainer_extra cannot replace {sorted(protected)}")
+        trainer_options.update(trainer_extra or {})
+        trainer = pl.Trainer(**trainer_options)
 
         trainer.fit(model=model, datamodule=datamodule)
         if logger is not None and hasattr(logger, "experiment"):
