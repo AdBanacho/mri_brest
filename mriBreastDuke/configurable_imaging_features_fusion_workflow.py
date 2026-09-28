@@ -1,6 +1,7 @@
 """Train configurable MRI and tabular branches for later decision fusion."""
 
 import argparse
+import json
 import math
 from numbers import Number
 
@@ -10,7 +11,11 @@ from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
 
 from mriBreastDuke.classificators import NiftiClassifier, Simple3DFCN
-from mriBreastDuke.constants import ANNOTATION_BOXES_FILE_NAME, IMAGING_FEATURES_FILE_NAME, SEED
+from mriBreastDuke.constants import (
+    ANNOTATION_BOXES_FILE_NAME, IMAGING_FEATURES_FILE_NAME, IMAGES_METADATA,
+    TARGETS_FILE_NAME, NIFTI_PATH, PREPARED_TO_TRAIN_PATH, SUBTRACTION_PATH,
+    LIGHTING_LOGS, CHECKPOINTS_PATH, SEED,
+)
 from mriBreastDuke.dataLoaders import (
     CLINICAL_PREDICTOR_COLUMNS,
     IMAGING_FEATURE_GROUPS,
@@ -74,6 +79,16 @@ def parse_args():
     parser.add_argument("--include_sensitive", action="store_true")
     parser.add_argument("--use_annotation_boxes", action="store_true", help="Use matched boxes for training-only lesion-preserving background masking (default: off).")
     parser.add_argument("--annotation_boxes_file", default=ANNOTATION_BOXES_FILE_NAME)
+    parser.add_argument("--clinical_features_file", default=TARGETS_FILE_NAME)
+    parser.add_argument("--metadata_file", default=IMAGES_METADATA)
+    parser.add_argument("--image_root", default=NIFTI_PATH)
+    parser.add_argument("--prepared_root", default=PREPARED_TO_TRAIN_PATH)
+    parser.add_argument("--subtraction_root", default=SUBTRACTION_PATH)
+    parser.add_argument("--logs_root", default=LIGHTING_LOGS)
+    parser.add_argument("--checkpoint_root", default=CHECKPOINTS_PATH)
+    parser.add_argument("--target_size", type=int, nargs=3, default=(256, 256, 64))
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--experiment_id", default="", help="Stable suffix for a full parameter configuration.")
 
     parser.add_argument("--epoch", type=int, default=30)
     parser.add_argument("--num_folds", type=int, default=5)
@@ -120,25 +135,40 @@ def parse_args():
     parser.add_argument("--mlp_alpha", type=float, default=1e-4)
     parser.add_argument("--mlp_learning_rate", type=float, default=1e-3)
     parser.add_argument("--mlp_max_iter", type=int, default=500)
+    parser.add_argument("--xgb_extra_json", default="{}", help="Additional XGBClassifier constructor options as JSON.")
+    parser.add_argument("--mlp_extra_json", default="{}", help="Additional MLPClassifier constructor options as JSON.")
+    parser.add_argument("--mri_extra_json", default="{}", help="Additional MONAI network constructor options as JSON.")
+    parser.add_argument("--trainer_extra_json", default="{}", help="Additional Lightning Trainer options as JSON.")
     return parser.parse_args()
 
 
-def make_mri_network(model_name, input_channels, num_classes):
+def _extra_options(raw, label):
+    options = json.loads(raw)
+    if not isinstance(options, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return options
+
+
+def make_mri_network(model_name, input_channels, num_classes, extra=None):
+    extra = extra or {}
     if model_name == "fcn":
         return Simple3DFCN(
             num_classes=num_classes,
             in_channels=input_channels,
+            **extra,
         )
     if model_name == "densenet121":
         return DenseNet121(
             spatial_dims=3,
             in_channels=input_channels,
             out_channels=num_classes,
+            **extra,
         )
     return resnet18(
         spatial_dims=3,
         n_input_channels=input_channels,
         num_classes=num_classes,
+        **extra,
     )
 
 
@@ -164,7 +194,7 @@ def make_feature_model(args, num_classes):
             "subsample": args.xgb_subsample,
             "colsample_bytree": args.xgb_colsample_bytree,
             "tree_method": "hist",
-            "random_state": SEED,
+            "random_state": args.seed,
             "n_jobs": args.xgb_n_jobs,
             "objective": (
                 "binary:logistic" if num_classes == 2 else "multi:softprob"
@@ -173,9 +203,10 @@ def make_feature_model(args, num_classes):
         }
         if num_classes > 2:
             parameters["num_class"] = num_classes
+        parameters.update(_extra_options(args.xgb_extra_json, "xgb_extra_json"))
         return XGBClassifier(**parameters)
 
-    return MLPClassifier(
+    parameters = dict(
         hidden_layer_sizes=_parse_hidden_layers(args.mlp_hidden_layers),
         activation="relu",
         solver="adam",
@@ -185,8 +216,10 @@ def make_feature_model(args, num_classes):
         early_stopping=True,
         validation_fraction=0.15,
         n_iter_no_change=20,
-        random_state=SEED,
+        random_state=args.seed,
     )
+    parameters.update(_extra_options(args.mlp_extra_json, "mlp_extra_json"))
+    return MLPClassifier(**parameters)
 
 
 def make_feature_selector(args):
@@ -200,7 +233,7 @@ def make_feature_selector(args):
         tolerance=args.lasso_tolerance,
         min_features=args.lasso_min_features,
         n_jobs=args.lasso_n_jobs,
-        random_state=SEED,
+        random_state=args.seed,
     )
 
 
@@ -211,6 +244,8 @@ def prepare_studies_and_features(args):
     )
     studies = get_oncotype_clinical_predictors_as_study_df(
         isBinary=True,
+        features_file=args.clinical_features_file,
+        metadata_file=args.metadata_file,
         include_sensitive=args.include_sensitive,
         include_oncotype_score=False,
     )
@@ -257,6 +292,7 @@ def build_experiment_name(args, selected_groups):
         f"sens{args.sensitivity_lambda:g}_boost{args.positive_boost:g}_"
         f"bs{args.batch_size}"
         f"{'_annboxes' if args.use_annotation_boxes else ''}"
+        f"{'_' + args.experiment_id if args.experiment_id else ''}"
     )
 
 
@@ -288,6 +324,7 @@ def summarize_metrics(metrics_per_fold):
 
 def main():
     args = parse_args()
+    pl.seed_everything(args.seed)
     studies, continuous, categorical, selected_groups = (
         prepare_studies_and_features(args)
     )
@@ -299,6 +336,7 @@ def main():
             args.mri_model,
             input_channels=input_channels,
             num_classes=num_classes,
+            extra=_extra_options(args.mri_extra_json, "mri_extra_json"),
         )
         return NiftiClassifier(
             network,
@@ -339,10 +377,17 @@ def main():
         inner_calibration_folds=args.threshold_calibration_folds,
         use_annotation_boxes=args.use_annotation_boxes,
         annotation_boxes_file=args.annotation_boxes_file,
+        image_root=args.image_root,
+        prepared_root=args.prepared_root,
+        subtraction_root=args.subtraction_root,
+        logs_root=args.logs_root,
+        checkpoints_root=args.checkpoint_root,
+        target_size=tuple(args.target_size),
+        seed=args.seed,
+        trainer_extra=_extra_options(args.trainer_extra_json, "trainer_extra_json"),
     )
     summarize_metrics(metrics)
 
 
 if __name__ == "__main__":
-    pl.seed_everything(SEED)
     main()

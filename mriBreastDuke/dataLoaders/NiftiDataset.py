@@ -40,6 +40,7 @@ class NiftiDataset(Dataset):
                  use_monai=True,
                  subtraction_mode=SUBTRACTION_NONE,
                  subtraction_root=SUBTRACTION_PATH,
+                 prepared_root=PREPARED_TO_TRAIN_PATH,
                  annotation_boxes=None,
                  training=False):
         self.df = df.reset_index(drop=True)
@@ -50,7 +51,11 @@ class NiftiDataset(Dataset):
         # self.sizes = load_or_compute_sizes(self.df, self.size_cache_path, self.image_root, self.serie_col)
         self.use_monai = use_monai
         self.subtraction_mode = validate_subtraction_mode(subtraction_mode)
-        self.subtraction_root = subtraction_root
+        # Cached volumes from different sources/sizes must never share a filename.
+        source_key = hashlib.sha256(os.path.abspath(image_root).encode()).hexdigest()[:12]
+        size_key = "original_size" if target_size is None else "size_" + "x".join(map(str, target_size))
+        self.prepared_root = os.path.join(prepared_root, source_key, size_key)
+        self.subtraction_root = os.path.join(subtraction_root, source_key)
         self.annotation_boxes = annotation_boxes or {}
         self.training = training
 
@@ -59,8 +64,8 @@ class NiftiDataset(Dataset):
 
     def _load_nifti(self, serie):
         in_path = os.path.join(self.image_root, f"{serie}.nii.gz")
-        os.makedirs(PREPARED_TO_TRAIN_PATH, exist_ok=True)
-        out_path = os.path.join(PREPARED_TO_TRAIN_PATH, f"{serie}.nii.gz")
+        os.makedirs(self.prepared_root, exist_ok=True)
+        out_path = os.path.join(self.prepared_root, f"{serie}.nii.gz")
 
         lock = FileLock(out_path + ".lock")
 
