@@ -13,27 +13,13 @@ from mriBreastDuke.constants import (
 # The clinical workbook contains three non-data rows: feature group, feature
 # name, and coding definition. Reading the relevant Excel columns explicitly
 # makes the loader independent of pandas' multi-index header flattening.
-_CLINICAL_EXCEL_COLUMNS = "A,B,T,U,V,W,X,Y,Z,AA,AB,AC,AD,AE,AF,AG,AH,AI,AJ,AK,AW,AX,AY,AZ,BA"
+_CLINICAL_EXCEL_COLUMNS = "A,T,U,V,AB,AK,AW,AX,AY,AZ,BA"
 _CLINICAL_SOURCE_COLUMNS = (
     "patientId",
-    "days_to_mri",
     "date_of_birth_days",
     "menopause",
     "race_ethnicity",
-    "metastatic_at_presentation",
-    "er_status",
-    "pr_status",
-    "her2_status",
-    "molecular_subtype",
     "oncotype_score",
-    "clinical_t_stage",
-    "clinical_n_stage",
-    "clinical_m_stage",
-    "tubule_grade",
-    "nuclear_grade",
-    "mitotic_grade",
-    "nottingham_grade",
-    "histologic_type",
     "tumor_laterality",
     "multicentric_multifocal",
     "contralateral_breast_involvement",
@@ -42,25 +28,15 @@ _CLINICAL_SOURCE_COLUMNS = (
     "pectoral_chest_involvement",
 )
 
-# Pretreatment variables suitable for multimodal models. Although the workbook
-# represents most of these fields with numbers, they are categorical codes and
-# should be encoded inside each training fold rather than treated as continuous.
+# Conservative MRI-time clinical/radiology predictors. Pathology, hormone
+# receptors, stage and grade are deliberately excluded from the default score
+# prediction branch: some are close score proxies and their recording dates
+# cannot be verified in this retrospective workbook. The assay score is read
+# ONLY to construct the target, never to create a predictor.
 CLINICAL_PREDICTOR_COLUMNS = (
     "age_at_diagnosis_years",
     "menopause",
-    "metastatic_at_presentation",
-    "er_status",
-    "pr_status",
-    "her2_status",
-    "molecular_subtype",
-    "clinical_t_stage",
-    "clinical_n_stage",
-    "clinical_m_stage",
-    "tubule_grade",
-    "nuclear_grade",
-    "mitotic_grade",
-    "nottingham_grade",
-    "histologic_type",
+    "tumor_laterality",
     "multicentric_multifocal",
     "contralateral_breast_involvement",
     "suspicious_lymph_nodes",
@@ -109,12 +85,13 @@ def read_useful_clinical_predictors(
     include_oncotype_score=False,
     include_sensitive=False,
 ):
-    """Load leakage-safe pretreatment clinical predictors from the Duke file.
+    """Load conservative MRI-time predictors from the Duke workbook.
 
-    Treatment, pathologic response, recurrence, and follow-up variables are
-    intentionally excluded because they occur after the pretreatment MRI and
-    would leak outcome information. Except for age, the numeric clinical fields
-    are category codes; fit their encoding/imputation only on the training fold.
+    The workbook does not provide dates for all findings. These fields must be
+    confirmed as available by the intended prediction time before prospective
+    use. Treatment, post-treatment outcome and score-proxy pathology fields are
+    excluded. Except for age, numeric predictor fields are category codes;
+    fit their encoding/imputation only on the training fold.
 
     Args:
         features_file: Clinical workbook path. Relative paths are resolved under
@@ -143,6 +120,11 @@ def read_useful_clinical_predictors(
     non_numeric_columns = {"patientId", "tumor_laterality"}
     for column in data.columns.difference(non_numeric_columns):
         data[column] = pd.to_numeric(data[column], errors="coerce")
+    # A categorical string with pd.NA reaches sklearn as object dtype; its
+    # SimpleImputer expects np.nan and otherwise raises on pd.NA comparisons.
+    data["tumor_laterality"] = data["tumor_laterality"].where(
+        data["tumor_laterality"].notna(), float("nan")
+    )
 
     # The source column is the number of days from the MRI date backwards to
     # birth, so it is negative for valid dates.

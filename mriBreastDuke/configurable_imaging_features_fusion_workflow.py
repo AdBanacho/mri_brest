@@ -10,7 +10,7 @@ from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
 
 from mriBreastDuke.classificators import NiftiClassifier, Simple3DFCN
-from mriBreastDuke.constants import IMAGING_FEATURES_FILE_NAME, SEED
+from mriBreastDuke.constants import ANNOTATION_BOXES_FILE_NAME, IMAGING_FEATURES_FILE_NAME, SEED
 from mriBreastDuke.dataLoaders import (
     CLINICAL_PREDICTOR_COLUMNS,
     IMAGING_FEATURE_GROUPS,
@@ -72,6 +72,8 @@ def parse_args():
     parser.add_argument("--imaging_patient_id_column", default="Patient ID")
     parser.add_argument("--allow_missing_imaging_features", action="store_true")
     parser.add_argument("--include_sensitive", action="store_true")
+    parser.add_argument("--use_annotation_boxes", action="store_true", help="Use matched boxes for training-only lesion-preserving background masking (default: off).")
+    parser.add_argument("--annotation_boxes_file", default=ANNOTATION_BOXES_FILE_NAME)
 
     parser.add_argument("--epoch", type=int, default=30)
     parser.add_argument("--num_folds", type=int, default=5)
@@ -247,12 +249,14 @@ def build_experiment_name(args, selected_groups):
             f"_lasso-cv{args.lasso_cv_folds}-cs{args.lasso_cs}-"
             f"min{args.lasso_min_features}"
         )
+    clinical_suffix = "_clinical-safe-v2" if "clinical" in selected_groups else ""
     return (
         f"ImagingFeaturesFusion_{args.mri_model}_{args.subtraction_mode}_"
-        f"{'-'.join(selected_groups)}_{args.feature_model}{selector_suffix}_"
+        f"{'-'.join(selected_groups)}_{args.feature_model}{selector_suffix}{clinical_suffix}_"
         f"auc-cal{args.threshold_calibration_folds}_lr{args.lr:.0e}_"
         f"sens{args.sensitivity_lambda:g}_boost{args.positive_boost:g}_"
         f"bs{args.batch_size}"
+        f"{'_annboxes' if args.use_annotation_boxes else ''}"
     )
 
 
@@ -333,6 +337,8 @@ def main():
         ),
         tabular_feature_plot_top_n=args.lasso_plot_top_n,
         inner_calibration_folds=args.threshold_calibration_folds,
+        use_annotation_boxes=args.use_annotation_boxes,
+        annotation_boxes_file=args.annotation_boxes_file,
     )
     summarize_metrics(metrics)
 

@@ -5,7 +5,7 @@ from numbers import Number
 import math
 
 from mriBreastDuke.dataLoaders import get_oncotype_score_for_series_as_studyId_and_label_df
-from mriBreastDuke.constants import SEED
+from mriBreastDuke.constants import ANNOTATION_BOXES_FILE_NAME, SEED
 from mriBreastDuke.classificators import NiftiClassifier, Simple3DFCN
 from mriBreastDuke.n_fold_cv_run import run_5fold_cv
 from mriBreastDuke.dataLoaders.subtraction import (
@@ -32,6 +32,8 @@ def parse_args():
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--sensitivity_lambda", type=float, default=0.3)
     parser.add_argument("--positive_boost", type=float, default=1.0)
+    parser.add_argument("--use_annotation_boxes", action="store_true", help="Enable training-only annotation-guided background masking (default: off).")
+    parser.add_argument("--annotation_boxes_file", default=ANNOTATION_BOXES_FILE_NAME)
     parser.add_argument(
         "--subtraction_mode",
         choices=SUBTRACTION_MODES,
@@ -111,6 +113,8 @@ def main():
     ]
 
     model_name, make_model = models[args.model]
+    if args.use_annotation_boxes:
+        model_name += "_annboxes"
 
     metrics_per_fold = run_5fold_cv(
         df=df,
@@ -122,6 +126,8 @@ def main():
         num_workers=args.num_workers,
         positive_boost=args.positive_boost,
         subtraction_mode=args.subtraction_mode,
+        use_annotation_boxes=args.use_annotation_boxes,
+        annotation_boxes_file=args.annotation_boxes_file,
     )
 
     print("\n========== CV Summary ==========")

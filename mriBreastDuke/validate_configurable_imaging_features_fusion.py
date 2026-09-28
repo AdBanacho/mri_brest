@@ -53,6 +53,8 @@ from mriBreastDuke.dataLoaders import (
     SUBTRACTION_NONE,
     get_input_channels,
 )
+from mriBreastDuke.constants import ANNOTATION_BOXES_FILE_NAME
+from mriBreastDuke.dataLoaders.annotation_boxes import load_annotation_boxes, annotation_coverage
 from mriBreastDuke.threshold_tuning import (
     make_inner_calibration_split,
     select_balanced_accuracy_threshold,
@@ -96,6 +98,8 @@ def parse_args():
     parser.add_argument("--imaging_patient_id_column", default="Patient ID")
     parser.add_argument("--allow_missing_imaging_features", action="store_true")
     parser.add_argument("--include_sensitive", action="store_true")
+    parser.add_argument("--use_annotation_boxes", action="store_true", help="Audit annotation matching for an annotation-trained experiment; never supplies boxes to predictions.")
+    parser.add_argument("--annotation_boxes_file", default=ANNOTATION_BOXES_FILE_NAME)
     parser.add_argument("--lasso_cv_folds", type=int, default=5)
     parser.add_argument("--lasso_cs", type=int, default=20)
     parser.add_argument("--lasso_max_iter", type=int, default=5000)
@@ -464,6 +468,12 @@ def run_validation(args):
         / f"fusion_alpha_{args.fusion_alpha:g}",
         create=True,
     )
+    if args.use_annotation_boxes:
+        _, coverage = annotation_coverage(
+            studies, load_annotation_boxes(args.annotation_boxes_file), image_root=NIFTI_PATH
+        )
+        coverage.to_csv(output_root / "annotation_coverage.csv", index=False)
+        print(f"[ANNOTATIONS] {coverage.status.value_counts().to_dict()}", flush=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"[VALIDATION] Experiment: {experiment_name}", flush=True)

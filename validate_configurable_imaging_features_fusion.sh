@@ -44,6 +44,14 @@ LASSO_N_JOBS=${LASSO_N_JOBS:-8}
 THRESHOLD_CALIBRATION_FOLDS=${THRESHOLD_CALIBRATION_FOLDS:-5}
 CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-/net/scratch/hscra/plgrid/plgabanacho/check_points}
 VALIDATION_OUTPUT_DIR=${VALIDATION_OUTPUT_DIR:-validation_charts}
+USE_ANNOTATION_BOXES=${USE_ANNOTATION_BOXES:-false}
+ANNOTATION_BOXES_FILE=${ANNOTATION_BOXES_FILE:-mriBreastDuke/features/Annotation_Boxes.xlsx}
+ANNOTATION_ARGS=()
+if [[ "$USE_ANNOTATION_BOXES" == true ]]; then
+    ANNOTATION_ARGS=(--use_annotation_boxes --annotation_boxes_file "$ANNOTATION_BOXES_FILE")
+elif [[ "$USE_ANNOTATION_BOXES" != false ]]; then
+    echo "USE_ANNOTATION_BOXES must be true or false" >&2; exit 2
+fi
 
 N_MRI=${#MRI_MODELS[@]}
 N_SUB=${#SUBTRACTIONS[@]}
@@ -129,4 +137,5 @@ python -m mriBreastDuke.validate_configurable_imaging_features_fusion \
     --fusion_alpha "$FUSION_ALPHA" \
     --checkpoint_root "$CHECKPOINT_ROOT" \
     --output_dir "$VALIDATION_OUTPUT_DIR" \
+    "${ANNOTATION_ARGS[@]}" \
     "${IMAGING_ARGS[@]}"

@@ -22,6 +22,8 @@ from mriBreastDuke.dataLoaders import (
 )
 from mriBreastDuke.classificators import DebugBatchShapeCallback
 from mriBreastDuke.threshold_tuning import make_inner_calibration_split
+from mriBreastDuke.constants import ANNOTATION_BOXES_FILE_NAME
+from mriBreastDuke.dataLoaders.annotation_boxes import load_annotation_boxes, annotation_coverage
 
 def _resolve_output_dir(path_like):
     path = Path(path_like)
@@ -214,6 +216,8 @@ def run_5fold_cv(
     tabular_feature_selector_factory=None,
     tabular_feature_plot_top_n=30,
     inner_calibration_folds=None,
+    use_annotation_boxes=False,
+    annotation_boxes_file=ANNOTATION_BOXES_FILE_NAME,
 ):
     """Train MRI and optional tabular branches in leakage-safe CV folds.
 
@@ -271,6 +275,18 @@ def run_5fold_cv(
     print(f"[INPUT] Subtraction mode: {subtraction_mode}", flush=True)
 
     groups = df[group_column].values if group_column is not None else None
+    annotation_mapping = {}
+    annotation_report = None
+    if use_annotation_boxes:
+        annotation_mapping, annotation_report = annotation_coverage(
+            df, load_annotation_boxes(annotation_boxes_file), image_root=NIFTI_PATH
+        )
+        print(f"[ANNOTATIONS] {annotation_report.status.value_counts().to_dict()}", flush=True)
+        if not annotation_mapping:
+            raise ValueError(
+                "No eligible MRI studies for annotation-guided training; "
+                "inspect patient matching and source NIfTI geometry."
+            )
     metrics_per_fold = []
     histories_per_fold = []
     feature_selection_reports = []
@@ -378,6 +394,7 @@ def run_5fold_cv(
             batch_size=batch_size,
             num_workers=num_workers,
             subtraction_mode=subtraction_mode,
+            annotation_boxes=annotation_mapping,
         )
 
         class_weights = _compute_balanced_class_weights(
@@ -403,6 +420,8 @@ def run_5fold_cv(
         # Directory for this fold's checkpoints
         ckpt_dir = checkpoints_root / model_name / fold_version / "checkpoints"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
+        if annotation_report is not None:
+            annotation_report.to_csv(ckpt_dir / "annotation_coverage.csv", index=False)
 
         if inner_calibration_folds is not None:
             manifest_columns = list(
