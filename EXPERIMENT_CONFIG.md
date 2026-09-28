@@ -9,6 +9,16 @@ python3 run_experiment.py --validate
 python3 run_experiment.py --summarize
 ```
 
+On Helios, the login node's default `python3` may be too old for this project.
+The runner will use `python3.11` if available, otherwise it loads
+`Python/3.11.5-GCCcore-13.2.0` and relaunches itself. You can also load it
+explicitly before running the commands above:
+
+```bash
+module load Python/3.11.5-GCCcore-13.2.0
+python3 --version
+```
+
 The long forms `--training` and `--validation` work too. The dry run prints the
 array size, Slurm request and first Python task command. Each normal command
 submits Slurm jobs and prints the job ID. Complete training before validation,

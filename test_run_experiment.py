@@ -1,6 +1,7 @@
 """Checks for array planning and handoff between training and validation."""
 
 import copy
+import ast
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,20 @@ class ExperimentRunnerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.config = runner.load_config(Path(__file__).with_name("experiment.toml"))
+
+    def test_old_python_entrypoint_loads_cluster_module(self):
+        # The file must parse before the version guard can run on the login node.
+        ast.parse(Path(runner.__file__).read_text(), feature_version=(3, 6))
+        with patch.object(runner.sys, "version_info", (3, 6, 15)), \
+                patch.object(runner.sys, "argv", ["run_experiment.py", "--train", "my config.toml"]), \
+                patch.object(runner.shutil, "which", return_value=None), \
+                patch.object(runner.os, "execvpe", side_effect=RuntimeError("relaunch")) as relaunch:
+            with self.assertRaisesRegex(RuntimeError, "relaunch"):
+                runner._use_supported_python()
+        args, _ = relaunch.call_args
+        self.assertIn("module load Python/3.11.5-GCCcore-13.2.0", args[1][2])
+        self.assertIn("'my config.toml'", args[1][2])
+        self.assertEqual(args[2]["MRI_RUNNER_PYTHON_REEXEC"], "1")
 
     def test_training_and_validation_share_ids(self):
         self.assertEqual(len(runner._train_configs(self.config)), 48)

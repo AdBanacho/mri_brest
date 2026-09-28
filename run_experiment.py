@@ -5,16 +5,39 @@ Planning and submission use only the Python standard library. Heavy ML imports
 occur inside individual Slurm tasks, after the requested environment is loaded.
 """
 
-from __future__ import annotations
+import os
+import shlex
+import shutil
+import sys
+
+
+def _use_supported_python():
+    """Relaunch from old Helios login-node Python before importing this runner."""
+    if sys.version_info >= (3, 10):
+        return
+    script = os.path.abspath(__file__)
+    python311 = shutil.which("python3.11")
+    if python311:
+        os.execv(python311, [python311, script] + sys.argv[1:])
+    hint = "Load Python/3.11.5-GCCcore-13.2.0 and retry."
+    if os.environ.get("MRI_RUNNER_PYTHON_REEXEC") == "1":
+        sys.exit("This project requires Python 3.10 or newer. " + hint)
+    env = os.environ.copy()
+    env["MRI_RUNNER_PYTHON_REEXEC"] = "1"
+    command = (
+        "module load Python/3.11.5-GCCcore-13.2.0 && exec python3 "
+        + " ".join(shlex.quote(arg) for arg in [script] + sys.argv[1:])
+    )
+    os.execvpe("bash", ["bash", "-lc", command], env)
+
+
+_use_supported_python()
 
 import argparse
 import hashlib
 import itertools
 import json
-import shlex
-import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 try:
