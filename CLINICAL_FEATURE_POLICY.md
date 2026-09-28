@@ -18,6 +18,8 @@ The `oncotype_score` column AB is read **solely as a target**, for restricting
 the retrospectively labeled cohort and computing the existing class labels.
 It is never included in the predictor set. `race_ethnicity` (V) remains
 excluded by default and can be enabled explicitly with `--include_sensitive`.
+Radiologist BI-RADS density from a separate workbook is an optional tabular
+hyperparameter, controlled by `--density_mode`; see `RADIOLOGIST_DENSITY.md`.
 
 Removed from the default predictors: ER, PR, HER2, molecular subtype (X–AA),
 metastatic status (W), staging (AC–AE), tubule/nuclear/mitotic/Nottingham

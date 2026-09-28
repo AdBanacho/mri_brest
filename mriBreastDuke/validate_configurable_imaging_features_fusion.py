@@ -43,11 +43,13 @@ from mriBreastDuke.configurable_imaging_features_fusion_workflow import (
 from mriBreastDuke.constants import (
     CHECKPOINTS_PATH,
     IMAGING_FEATURES_FILE_NAME,
+    RADIOLOGIST_DENSITY_FILE_NAME,
     NIFTI_PATH,
     SEED,
     VALIDATION_CHART_PATH,
 )
 from mriBreastDuke.dataLoaders import (
+    DENSITY_MODES,
     NiftiDataModule,
     SUBTRACTION_MODES,
     SUBTRACTION_NONE,
@@ -96,6 +98,8 @@ def parse_args():
         help="Path to Imaging_Features.xlsx or its CSV export.",
     )
     parser.add_argument("--imaging_patient_id_column", default="Patient ID")
+    parser.add_argument("--density_mode", choices=DENSITY_MODES, default="none")
+    parser.add_argument("--density_file", default=RADIOLOGIST_DENSITY_FILE_NAME)
     parser.add_argument("--allow_missing_imaging_features", action="store_true")
     parser.add_argument("--include_sensitive", action="store_true")
     parser.add_argument("--use_annotation_boxes", action="store_true", help="Audit annotation matching for an annotation-trained experiment; never supplies boxes to predictions.")
