@@ -10,7 +10,7 @@ from mriBreastDuke.constants import NIFTI_PATH
 from mriBreastDuke.dataLoaders.subtraction import SUBTRACTION_NONE, get_input_channels
 
 class NiftiDataModule(pl.LightningDataModule):
-    def __init__(self, train_df, val_df, target_size=None, image_root=NIFTI_PATH, batch_size=2, num_workers=4, subtraction_mode=SUBTRACTION_NONE):
+    def __init__(self, train_df, val_df, target_size=None, image_root=NIFTI_PATH, batch_size=2, num_workers=4, subtraction_mode=SUBTRACTION_NONE, annotation_boxes=None):
         super().__init__()
         self.train_df = train_df
         self.val_df = val_df
@@ -20,6 +20,7 @@ class NiftiDataModule(pl.LightningDataModule):
         self.target_size = target_size
         self.subtraction_mode = subtraction_mode
         self.input_channels = get_input_channels(subtraction_mode)
+        self.annotation_boxes = annotation_boxes or {}
 
     def setup(self, stage=None):
         self.train_ds = self.setup_dataset(self.train_df, "train")
@@ -32,7 +33,9 @@ class NiftiDataModule(pl.LightningDataModule):
             target_size=self.target_size,
             image_root=self.image_root,
             use_monai=True,
-            subtraction_mode=self.subtraction_mode
+            subtraction_mode=self.subtraction_mode,
+            annotation_boxes=self.annotation_boxes if label == "train" else None,
+            training=label == "train" and bool(self.annotation_boxes),
         )
 
     def train_dataloader(self):

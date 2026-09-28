@@ -42,6 +42,14 @@ LASSO_MIN_FEATURES=${LASSO_MIN_FEATURES:-1}
 LASSO_N_JOBS=${LASSO_N_JOBS:-8}
 LASSO_PLOT_TOP_N=${LASSO_PLOT_TOP_N:-30}
 THRESHOLD_CALIBRATION_FOLDS=${THRESHOLD_CALIBRATION_FOLDS:-5}
+USE_ANNOTATION_BOXES=${USE_ANNOTATION_BOXES:-false}
+ANNOTATION_BOXES_FILE=${ANNOTATION_BOXES_FILE:-mriBreastDuke/features/Annotation_Boxes.xlsx}
+ANNOTATION_ARGS=()
+if [[ "$USE_ANNOTATION_BOXES" == true ]]; then
+    ANNOTATION_ARGS=(--use_annotation_boxes --annotation_boxes_file "$ANNOTATION_BOXES_FILE")
+elif [[ "$USE_ANNOTATION_BOXES" != false ]]; then
+    echo "USE_ANNOTATION_BOXES must be true or false" >&2; exit 2
+fi
 
 N_MRI=${#MRI_MODELS[@]}
 N_SUB=${#SUBTRACTIONS[@]}
@@ -123,4 +131,5 @@ python -m mriBreastDuke.configurable_imaging_features_fusion_workflow \
     --positive_boost "$POSITIVE_BOOST" \
     --sensitivity_lambda "$SENSITIVITY_LAMBDA" \
     --lr "$LEARNING_RATE" \
+    "${ANNOTATION_ARGS[@]}" \
     "${IMAGING_ARGS[@]}"

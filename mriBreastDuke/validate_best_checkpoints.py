@@ -14,7 +14,8 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-from mriBreastDuke.constants import CHECKPOINTS_PATH, NIFTI_PATH, SEED, VALIDATION_CHART_PATH
+from mriBreastDuke.constants import ANNOTATION_BOXES_FILE_NAME, CHECKPOINTS_PATH, NIFTI_PATH, SEED, VALIDATION_CHART_PATH
+from mriBreastDuke.dataLoaders.annotation_boxes import load_annotation_boxes, annotation_coverage
 from mriBreastDuke.classificators import NiftiClassifier, Simple3DFCN
 from mriBreastDuke.checkpoint_selection import rank_checkpoints
 from mriBreastDuke.dataLoaders import (
@@ -49,6 +50,8 @@ def parse_args():
     parser.add_argument("--num_folds", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--use_annotation_boxes", action="store_true", help="Audit box coverage for annotation-trained checkpoints; inference remains full-volume.")
+    parser.add_argument("--annotation_boxes_file", default=ANNOTATION_BOXES_FILE_NAME)
     parser.add_argument("--is_binary_classification", type=bool, default=False)
     parser.add_argument(
         "--subtraction_mode",
@@ -606,6 +609,14 @@ def main():
     configure_checkpoint_loading()
     args = parse_args()
     df = get_oncotype_score_for_series_as_studyId_and_label_df(args.is_binary_classification)
+    if args.use_annotation_boxes:
+        _, coverage = annotation_coverage(
+            df, load_annotation_boxes(args.annotation_boxes_file), image_root=NIFTI_PATH
+        )
+        output_dir = Path(args.charts_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        coverage.to_csv(output_dir / "annotation_coverage.csv", index=False)
+        print(f"[ANNOTATIONS] {coverage.status.value_counts().to_dict()}", flush=True)
     num_classes = len(set(df.label))
     input_channels = get_input_channels(args.subtraction_mode)
     validation_lr = args.lr if args.lr is not None else 1e-3
@@ -659,6 +670,8 @@ def main():
 
     base_model_name, make_model = models[args.model]
     model_name = build_model_name(base_model_name, args)
+    if args.use_annotation_boxes:
+        model_name += "_annboxes"
 
     print(f"[VALIDATION] Base model name: {base_model_name}", flush=True)
     print(f"[VALIDATION] Resolved checkpoint model name: {model_name}", flush=True)

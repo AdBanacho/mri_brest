@@ -28,6 +28,7 @@ from mriBreastDuke.dataLoaders.subtraction import (
     build_subtraction_pairs,
     validate_subtraction_mode,
 )
+from mriBreastDuke.dataLoaders.annotation_boxes import resize_box
 
 
 class NiftiDataset(Dataset):
@@ -38,7 +39,9 @@ class NiftiDataset(Dataset):
                  size_cache_path='train',
                  use_monai=True,
                  subtraction_mode=SUBTRACTION_NONE,
-                 subtraction_root=SUBTRACTION_PATH):
+                 subtraction_root=SUBTRACTION_PATH,
+                 annotation_boxes=None,
+                 training=False):
         self.df = df.reset_index(drop=True)
         self.image_root = image_root
         self.target_col = target_col
@@ -48,6 +51,8 @@ class NiftiDataset(Dataset):
         self.use_monai = use_monai
         self.subtraction_mode = validate_subtraction_mode(subtraction_mode)
         self.subtraction_root = subtraction_root
+        self.annotation_boxes = annotation_boxes or {}
+        self.training = training
 
     def __len__(self):
         return len(self.df)
@@ -316,5 +321,25 @@ class NiftiDataset(Dataset):
             vols = self._load_subtractions(row, series_ids)
 
         vol = torch.stack(vols, dim=0)
+
+        # Annotation supervision is confined to the training loader. The
+        # classifier and its inference/validation batches still see (vol, label).
+        if self.training and row.get("studyId") in self.annotation_boxes:
+            box, source_shape = self.annotation_boxes[row["studyId"]]
+            starts, ends = resize_box(box, source_shape, vol.shape[-3:])
+            # Mask one randomly placed background cuboid, never the lesion.
+            spatial = vol.shape[-3:]
+            patch = tuple(max(1, size // 4) for size in spatial)
+            for _ in range(8):
+                origin = tuple(int(torch.randint(0, size - width + 1, ()).item())
+                               for size, width in zip(spatial, patch))
+                if all(origin[axis] + patch[axis] > starts[axis]
+                       and origin[axis] < ends[axis] for axis in range(3)):
+                    continue
+                vol = vol.clone()
+                d, h, w = origin
+                pd, ph, pw = patch
+                vol[..., d:d + pd, h:h + ph, w:w + pw] = 0
+                break
 
         return vol, label
