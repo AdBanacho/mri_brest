@@ -106,7 +106,7 @@ def _path(raw: str, config_dir: Path) -> str:
     return str((config_dir / path).resolve() if not path.is_absolute() else path.resolve())
 
 
-def load_config(path: Path) -> dict:
+def load_config(path: Path, config_base: Path = None) -> dict:
     path = path.expanduser().resolve()
     with path.open("rb") as stream:
         config = tomllib.load(stream)
@@ -125,7 +125,7 @@ def load_config(path: Path) -> dict:
         raise ValueError("[data].seed must be an integer")
     paths = config.get("paths", {})
     _keys(paths, set(PATH_KEYS) | {"summary_root", "slurm_logs"}, "paths")
-    config["paths"] = {key: _path(value, path.parent) for key, value in paths.items()}
+    config["paths"] = {key: _path(value, config_base or path.parent) for key, value in paths.items()}
     train = config.get("train", {})
     _keys(train, TRAIN_KEYS | {"grid"}, "train")
     _keys(train.get("grid", {}), TRAIN_KEYS, "train.grid")
@@ -387,6 +387,7 @@ def main() -> None:
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--config", type=Path, default=ROOT / "experiment.toml")
     source.add_argument("--snapshot", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--config-base", type=Path, help=argparse.SUPPRESS)
     choice = parser.add_mutually_exclusive_group(required=True)
     choice.add_argument("--train", "--training", dest="stage", action="store_const", const="train")
     choice.add_argument("--validate", "--validation", dest="stage", action="store_const", const="validate")
@@ -397,7 +398,7 @@ def main() -> None:
     try:
         config_path = (args.snapshot or args.config).expanduser().resolve()
         config = (load_snapshot(config_path)
-                  if args.snapshot else load_config(config_path))
+                  if args.snapshot else load_config(config_path, args.config_base))
         if args.task_index is not None:
             command = task_command(config, args.stage, args.task_index)
             print(shlex.join(command), flush=True)
