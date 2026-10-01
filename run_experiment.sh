@@ -47,7 +47,7 @@ write_config() {
 }
 
 supports_runner() {
-  "$1" -c 'import sys; assert sys.version_info >= (3, 10); import importlib.util; assert importlib.util.find_spec("tomllib") or importlib.util.find_spec("tomli")' >/dev/null 2>&1
+  "$1" -c 'import sys; assert sys.version_info >= (3, 10)' >/dev/null 2>&1
 }
 python_bin="${PYTHON_BIN:-python3}"
 if ! command -v "$python_bin" >/dev/null 2>&1 || ! supports_runner "$python_bin"; then
@@ -56,9 +56,14 @@ if ! command -v "$python_bin" >/dev/null 2>&1 || ! supports_runner "$python_bin"
   elif type module >/dev/null 2>&1 && module load ML-bundle >&2 && supports_runner python3; then
     python_bin=python3
   else
-    echo "Error: Python 3.10+ with tomllib/tomli is required. Load an available Python module (check: module avail Python), or set PYTHON_BIN." >&2
+    echo "Error: Python 3.10+ is required. Load an available Python module (check: module avail Python), or set PYTHON_BIN." >&2
     exit 2
   fi
+fi
+
+# Python 3.10 needs tomli; Python 3.11+ provides tomllib.
+if ! "$python_bin" -c 'import importlib.util; assert importlib.util.find_spec("tomllib") or importlib.util.find_spec("tomli")' >/dev/null 2>&1; then
+  "$python_bin" -m pip install tomli
 fi
 
 temporary_dir="${TMPDIR:-/tmp}"
