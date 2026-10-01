@@ -35,7 +35,7 @@ declare -A CFG_cleanup=(
 # [jobs]
 declare -A CFG_jobs=(
   [max_jobs]='0' # 0 = every training combination; 12 = first 12
-  [max_concurrent]='8' # Slurm array throttle for training and validation
+  [max_concurrent]='4' # Slurm array throttle for training and validation
   [account]='"plgvirtudrel2026-gpu-gh200"'
   [partition]='"plgrid-gpu-gh200"'
   [modules]='["ML-bundle"]'
@@ -80,7 +80,7 @@ declare -A CFG_train=(
   [imaging_patient_id_column]='"Patient ID"'
   [allow_missing_imaging_features]='false'
   [include_sensitive]='false'
-  [use_annotation_boxes]='false'
+  [use_annotation_boxes]='true'
   [lasso_cv_folds]='5'
   [lasso_cs]='20'
   [lasso_max_iter]='5000'
@@ -119,12 +119,12 @@ declare -A CFG_train_trainer_extra=(
 # [train.grid]
 declare -A CFG_train_grid=(
   [mri_model]='["densenet121", "resnet10", "resnet18"]'
-  [subtraction_mode]='["none", "post_minus_pre"]'
+  [subtraction_mode]='["none"]'
   [feature_groups]='[["clinical"], ["clinical", "kinetic", "morphology", "heterogeneity"]]'
   [feature_model]='["xgboost", "mlp"]'
   [batch_size]='[4]'
-  [positive_boost]='[1.0, 2.0]'
-  [sensitivity_lambda]='[0.05]'
+  [positive_boost]='[1.0]'
+  [sensitivity_lambda]='[0.05, 0.2]'
   [lr]='[1e-4]'
 )
 
