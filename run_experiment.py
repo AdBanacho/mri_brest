@@ -19,16 +19,11 @@ def _use_supported_python():
     python311 = shutil.which("python3.11")
     if python311:
         os.execv(python311, [python311, script] + sys.argv[1:])
-    hint = "Load Python/3.11.5-GCCcore-13.2.0 and retry."
-    if os.environ.get("MRI_RUNNER_PYTHON_REEXEC") == "1":
-        sys.exit("This project requires Python 3.10 or newer. " + hint)
-    env = os.environ.copy()
-    env["MRI_RUNNER_PYTHON_REEXEC"] = "1"
-    command = (
-        "module load Python/3.11.5-GCCcore-13.2.0 && exec python3 "
-        + " ".join(shlex.quote(arg) for arg in [script] + sys.argv[1:])
+    sys.exit(
+        "This project requires Python 3.10 or newer. "
+        "Use bash run_experiment.sh for automatic Python selection, "
+        "or load an available Python module (check: module spider Python)."
     )
-    os.execvpe("bash", ["bash", "-lc", command], env)
 
 
 _use_supported_python()
