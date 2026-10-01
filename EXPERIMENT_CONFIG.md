@@ -1,94 +1,60 @@
-# One configuration for the MRI fusion workflow
+# One Bash configuration for the MRI fusion workflow
 
-Edit [`experiment.toml`](experiment.toml), then run from the repository root:
-
-```bash
-python3 run_experiment.py --train --dry-run
-python3 run_experiment.py --train
-python3 run_experiment.py --validate
-python3 run_experiment.py --summarize
-```
-
-On Helios, the login node's default `python3` may be too old for this project.
-The runner will use `python3.11` if available, otherwise it loads
-`Python/3.11.5-GCCcore-13.2.0` and relaunches itself. You can also load it
-explicitly before running the commands above:
+Edit [`run_configuration.sh`](run_configuration.sh), then run from the repository root:
 
 ```bash
-module load Python/3.11.5-GCCcore-13.2.0
-python3 --version
+bash run_experiment.sh --train --dry-run
+bash run_experiment.sh --train
+bash run_experiment.sh --validate
+bash run_experiment.sh --summarize
 ```
 
-The long forms `--training` and `--validation` work too. The dry run prints the
-array size, Slurm request and first Python task command. Each normal command
-submits Slurm jobs and prints the job ID. Complete training before validation,
-and validation before summarization. To enforce the order in Slurm, submit each
-stage after the previous array has completed; check `squeue -u "$USER"` and
-`sacct -j <job-id>`. The summary is a single CPU job. `--dry-run` works for all
-three stages. Jobs require the project dependencies to have been installed in
-the compute environment (for example `pip install -e .` and the appropriate
-requirements file) before submission; jobs do not run pip concurrently.
-Each submission saves a resolved `experiment-<hash>.json` under `slurm_logs`;
-queued tasks read this snapshot, so later TOML edits cannot change an active
-array. Keep that snapshot with the corresponding results for provenance.
+The configuration is a Bash file of `CFG_*` associative arrays. Each value is a
+TOML literal: numbers and booleans can be written as `'30'` and `'false'`;
+strings need double quotes inside the Bash quotes, such as `'"lasso"'`.
+Grid values are TOML arrays, for example
+`[mri_model]='["resnet10", "resnet18"]'`. To sweep feature groups, use
+`[feature_groups]='[["clinical"], ["clinical", "kinetic"]]'`. Extra model
+options can be set in `CFG_train_xgb_extra`, `CFG_train_mlp_extra`,
+`CFG_train_mri_extra`, and `CFG_train_trainer_extra`; add arbitrary extra
+sweeps as arrays of inline tables under `CFG_train_grid`. Run the file with
+Bash; the shell on Helios must support associative arrays and namerefs
+(Bash 4.3+).
 
-`[cleanup].before_train = true` removes the configured checkpoint and
-TensorBoard log directories **once before the training array is submitted**.
-`[cleanup].before_validate = true` removes the validation directory, including
-its summary, **once before the validation array is submitted**. A separate
-`summary_root` is removed too. These flags are enabled in the example config;
-set either to `false` to retain earlier results. A dry run lists the exact
-directories and never removes them. The runner rejects broad directories,
-configured input paths, and overlapping output/Slurm log paths. Run stages in
-order: submitting a new training array after validation will remove the old
-checkpoints, and submitting validation again will remove its prior results.
+The Bash launcher selects Python 3.10+ with `tomllib` or `tomli`; it tries
+`python3.11` and `ML-bundle` if the default interpreter is too old. If those
+are unavailable, inspect `module avail Python`, load an available version, or
+set `PYTHON_BIN=/path/to/python3.11`. Compute jobs still load the modules
+listed in `CFG_jobs`. Install the project dependencies in that environment
+before submitting jobs. The Python planner remains responsible for expanding
+the grid, IDs, cleanup checks, snapshots, and Slurm submission.
 
-## Editing the grid
+The dry run prints the array size, Slurm request, cleanup directories and the
+first Python task command; it never submits or deletes anything. Submit training,
+then validation after training completes, then summarization after validation.
+The summary is a single CPU job. Long flags `--training` and `--validation`
+also work. `CFG_jobs[max_jobs]=0` selects the full grid, and
+`CFG_jobs[max_concurrent]` throttles the Slurm arrays.
 
-Values in `[train]` are fixed, while arrays in `[train.grid]` form a Cartesian
-product. To try multiple LASSO settings, add `lasso_cs = [10, 20]` to the grid;
-it overrides the fixed `lasso_cs` for each configuration. `feature_groups`
-needs an array of arrays: `[["clinical"], ["kinetic", "morphology"]]`.
-The `mri_model` grid accepts `fcn`, `densenet121`, `resnet10`, and `resnet18`.
-The example includes ResNet-10 and schedules 48 training configurations; edit
-the model list to run only the backbones you want.
-`[validate.grid]` sweeps `fusion_alpha` and optionally validation
-`num_workers`. It is combined with each selected training configuration.
-`max_jobs = 0` runs every training combination; a positive value selects the
-first N in deterministic (sorted key) product order for **both** training and
-validation. `max_concurrent` limits the active Slurm array tasks. The summary
-searches all results under `validation_root`, including older runs.
+The default cleanup flags delete checkpoints and TensorBoard logs once before
+training, and validation outputs once before validation. Set
+`CFG_cleanup[before_train]='false'` and
+`CFG_cleanup[before_validate]='false'` to retain older results. The runner
+rejects broad directories, configured input paths and overlapping outputs.
+Each submission saves a resolved `experiment-<hash>.json` snapshot in the
+configured Slurm log directory. Queued tasks use that snapshot, so changing the
+Bash configuration after submission cannot change active jobs.
 
-All CLI parameters of the training module are represented in `[train]`,
-`[train.grid]`, `[data]`, or `[paths]`. XGBoost, sklearn MLP, MONAI network and
-Lightning Trainer constructor options can be supplied in the four `*_extra`
-tables and swept using arrays of inline tables in `[train.grid]`. Only pass
-options the selected model supports. `trainer_extra` cannot replace callbacks,
-the logger or its output directory. Architecture options also need to be
-compatible with the corresponding validation model. If you modify checkpoint
-selection, fold splitting, model code or preprocessing itself, verify the
-saved artifacts with the updated validation pipeline.
-
-`[paths]` accepts absolute paths, `~`, paths relative to the TOML file, and
-`@CONSTANT_NAME` values from `mriBreastDuke/constants.py`. Keep the clinical
-and metadata workbooks available on the compute nodes; the metadata workbook
-is normally local and excluded from Git. The selected clinical workbook now
-provides both the labels and the predictors. `image_root`, preprocessing and
-subtraction caches, TensorBoard logs, checkpoints, validation outputs, report
-directory and Slurm logs have separate locations. The initial paths use the
-repository's existing constants. Change account/partition for your allocation;
-choose a CPU partition for the summary if required. To use a different config:
+Paths may be absolute, start with `~`, use `@CONSTANT_NAME` from
+`mriBreastDuke/constants.py`, or be relative to the Bash configuration file.
+The metadata workbook may exist only on your cluster and must be accessible
+from compute nodes. To use another configuration:
 
 ```bash
-python3 run_experiment.py --config /path/to/experiment.toml --train
+bash run_experiment.sh --config /path/to/my_configuration.sh --train --dry-run
 ```
 
-Each training configuration gets a `cfg` suffix derived from all its training
-settings, data size/seed and input paths. Validation derives the same suffix.
-This prevents different sweeps from sharing a checkpoint directory. Existing
-checkpoints from the old shell scripts have no suffix, so retrain with this
-runner to validate them through the unified config. Changing only
-`fusion_alpha` creates a new validation directory and reuses training.
-
-The original shell scripts remain available for older experiments. The new
-runner is the single entry point for experiments using `experiment.toml`.
+A configuration can start as a copy of `run_configuration.sh`. The original
+`experiment.toml` and direct `python3 run_experiment.py --config ...` entry
+remain supported for existing experiments. The Bash file is the editable
+configuration for new runs.
