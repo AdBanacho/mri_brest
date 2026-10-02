@@ -127,6 +127,12 @@ class ExperimentRunnerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "configured input"):
             runner._cleanup_targets(config, "train")
 
+    def test_cleanup_rejects_overlapping_outputs(self):
+        config = copy.deepcopy(self.config)
+        config["paths"]["validation_root"] = config["paths"]["checkpoint_root"]
+        with self.assertRaisesRegex(ValueError, "must not overlap"):
+            runner._cleanup_targets(config, "validate")
+
 
 if __name__ == "__main__":
     unittest.main()

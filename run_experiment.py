@@ -299,6 +299,14 @@ def _cleanup_targets(config: dict, stage: str) -> list[Path]:
     slurm_logs = Path(paths.get("slurm_logs", str(ROOT / "logs"))).resolve()
     outputs = [Path(paths[key]).resolve() for key in
                ("checkpoint_root", "logs_root", "validation_root") if key in paths]
+    if any(left == right or left in right.parents or right in left.parents
+           for left, right in itertools.combinations(outputs, 2)):
+        raise ValueError("Checkpoint, TensorBoard, and validation roots must not overlap when cleanup is enabled")
+    if stage == "validate" and len(targets) > 1:
+        summary = targets[1]
+        if any(summary == item or summary in item.parents or item in summary.parents
+               for item in outputs):
+            raise ValueError("Separate summary_root must not overlap another output root")
     for target in targets:
         if (len(target.parts) < 4 or target == ROOT or target in ROOT.parents
                 or target == Path.home() or target in Path.home().parents):
@@ -307,9 +315,6 @@ def _cleanup_targets(config: dict, stage: str) -> list[Path]:
             raise ValueError(f"Cleanup directory contains a configured input: {target}")
         if target == slurm_logs or target in slurm_logs.parents or slurm_logs in target.parents:
             raise ValueError(f"Cleanup directory overlaps Slurm logs/snapshots: {target}")
-        if any(target != item and (target in item.parents or item in target.parents)
-               for item in outputs):
-            raise ValueError(f"Cleanup directory overlaps another output root: {target}")
         if target.exists() and not target.is_dir():
             raise ValueError(f"Cleanup target is not a directory: {target}")
     if len(targets) > 1 and any(
