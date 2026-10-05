@@ -1,6 +1,2 @@
-#!/bin/bash
-set -euo pipefail
-
-cd "$(dirname "${BASH_SOURCE[0]}")"
-mkdir -p logs
-exec sbatch ConfigurableImagingFeaturesFusionBinary.sh "$@"
+#!/usr/bin/env bash
+exec bash "$(dirname -- "${BASH_SOURCE[0]}")/run_experiment.slurm" --train "$@"
