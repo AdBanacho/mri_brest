@@ -29,6 +29,10 @@ from mriBreastDuke.dataLoaders.subtraction import (
     validate_subtraction_mode,
 )
 from mriBreastDuke.dataLoaders.annotation_boxes import resize_box
+from mriBreastDuke.dataLoaders.nifti_cache import (
+    atomic_save_nifti,
+    load_or_create_nifti_cache,
+)
 
 
 class NiftiDataset(Dataset):
@@ -74,16 +78,11 @@ class NiftiDataset(Dataset):
         return self._load_nifti_custom(lock, in_path, out_path)
 
     def _load_nifti_custom(self, lock, in_path, out_path):
-
-        if os.path.exists(out_path):
-            return self._load_from_file(out_path)
-
-        with lock:
-            if os.path.exists(out_path):
-                return self._load_from_file(out_path)
-
-            vol = self._preprocess_and_save_image(in_path, out_path)
-            return vol
+        return load_or_create_nifti_cache(
+            out_path, self._load_from_file,
+            lambda: self._preprocess_and_save_image(in_path, out_path),
+            lock=lock, source=in_path,
+        )
 
     def _preprocess_and_save_image(self, in_path, out_path):
         nii = nib.load(in_path)
@@ -96,7 +95,7 @@ class NiftiDataset(Dataset):
             vol = self._interpolate(vol)
         vol_np = vol.squeeze(0).cpu().numpy()
         new_nii = nib.Nifti1Image(vol_np, affine=nii.affine)
-        nib.save(new_nii, out_path)
+        atomic_save_nifti(new_nii, out_path)
         return vol
 
     def _interpolate(self, vol):
@@ -116,16 +115,11 @@ class NiftiDataset(Dataset):
         return (vol - mean) / std
 
     def _load_nifti_monai(self, lock, in_path, out_path):
-
-        if os.path.exists(out_path):
-            return self._monai_load_cached(out_path)
-
-        with lock:
-            if os.path.exists(out_path):
-                return self._monai_load_cached(out_path)
-
-            vol = self._monai_preprocess_and_save(in_path, out_path)
-            return vol
+        return load_or_create_nifti_cache(
+            out_path, self._monai_load_cached,
+            lambda: self._monai_preprocess_and_save(in_path, out_path),
+            lock=lock, source=in_path,
+        )
 
     def _monai_load_cached(self, path) -> torch.Tensor:
         x = {"img": path}
@@ -153,7 +147,7 @@ class NiftiDataset(Dataset):
         img = out["img"].float()
         meta = out["img_meta_dict"]
 
-        nib.save(
+        atomic_save_nifti(
             nib.Nifti1Image(img.squeeze(0).cpu().numpy(), meta["affine"]),
             out_path
         )
@@ -260,13 +254,7 @@ class NiftiDataset(Dataset):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         lock = FileLock(output_path + ".lock")
 
-        if os.path.exists(output_path):
-            return self._monai_load_cached(output_path)
-
-        with lock:
-            if os.path.exists(output_path):
-                return self._monai_load_cached(output_path)
-
+        def create():
             (
                 minuend,
                 minuend_shape,
@@ -292,7 +280,7 @@ class NiftiDataset(Dataset):
             difference = (difference - difference.mean()) / (
                 difference.std(unbiased=False) + 1e-5
             )
-            nib.save(
+            atomic_save_nifti(
                 nib.Nifti1Image(
                     difference.squeeze(0).cpu().numpy(),
                     transformed_affine,
@@ -300,6 +288,12 @@ class NiftiDataset(Dataset):
                 output_path,
             )
             return difference
+
+        return load_or_create_nifti_cache(
+            output_path, self._monai_load_cached, create, lock=lock,
+            source=(os.path.join(self.image_root, f"{minuend_series_id}.nii.gz"),
+                    os.path.join(self.image_root, f"{subtrahend_series_id}.nii.gz")),
+        )
 
     def _load_subtractions(self, row, series_ids):
         pairs = build_subtraction_pairs(series_ids, self.subtraction_mode)
