@@ -22,13 +22,21 @@ the workbook is linked to an exact series and the transform is established.
 The loader joins boxes by exact, stripped `patientId`. Only a patient with
 exactly one study in the loaded cohort and source series with identical 3D
 shapes and affines is eligible. It checks box bounds against **every** series.
-Duplicate patient rows, malformed coordinates and out-of-volume bounds raise
-errors. Missing boxes, unmatched workbook IDs, patients with multiple studies,
+Duplicate workbook patient rows and malformed coordinates raise errors.
+Out-of-volume boxes receive `out_of_volume_box`, with the offending series UID,
+image shape and box bounds in the report's `detail` column. These studies use
+ordinary full-volume training; boxes are never clipped or rescaled to a guessed
+source grid. For example, a box at columns 358–364 and rows 374–386 cannot be
+applied to a `(256, 256, 96)` source image. Missing boxes, unmatched workbook IDs,
+patients with multiple studies,
 and incompatible series grids receive explicit statuses in
 `annotation_coverage.csv`; those studies use ordinary full-volume training.
 The report is saved beside each training fold's checkpoints, or at the
 validation output root. No box is guessed from a series name or applied to a
 different patient. Cohort-wide unused workbook entries are reported.
+Training still requires at least one eligible study when this option is enabled;
+if none is eligible, disable the option or supply annotations linked to the
+correct source grids.
 
 For eligible training studies, original half-open column/row/slice bounds are
 scaled through the loader's axis-aligned resize to `(256, 256, 64)` using floor

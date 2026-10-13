@@ -53,7 +53,8 @@ def annotation_coverage(studies, boxes, image_root=NIFTI_PATH):
     """Audit all studies and return only boxes safe to apply to every series.
 
     Missing annotations, ambiguous patient studies and incompatible series are
-    reported and left as full images. Out-of-volume coordinates are an error.
+    reported and left as full images. Out-of-volume boxes are also excluded:
+    the workbook does not identify a source grid from which to rescale them.
     """
     if not {"patientId", "studyId", "series_ids"}.issubset(studies.columns):
         raise ValueError("Annotation matching requires patientId, studyId and series_ids")
@@ -65,6 +66,7 @@ def annotation_coverage(studies, boxes, image_root=NIFTI_PATH):
     for row in studies.itertuples(index=False):
         patient = str(row.patientId).strip()
         status = "eligible"
+        detail = ""
         box = boxes.get(patient)
         if box is None:
             status = "missing_box"
@@ -81,9 +83,11 @@ def annotation_coverage(studies, boxes, image_root=NIFTI_PATH):
                     status = "incompatible_series_geometry"
                     break
                 if any(end > size for end, size in zip(box[1], shape)):
-                    raise ValueError(
+                    status = "out_of_volume_box"
+                    detail = (
                         f"Annotation for {patient} exceeds {series_id} image shape {shape}: {box}"
                     )
+                    break
                 geometry = (shape, np.asarray(image.affine))
                 if reference is not None and (
                     shape != reference[0]
@@ -94,11 +98,13 @@ def annotation_coverage(studies, boxes, image_root=NIFTI_PATH):
                 reference = geometry
             if status == "eligible":
                 matched[row.studyId] = (box, reference[0])
-        report.append({"patientId": patient, "studyId": row.studyId, "status": status})
+        report.append({"patientId": patient, "studyId": row.studyId,
+                       "status": status, "detail": detail})
     unused = sorted(set(boxes).difference(studies["patientId"].astype(str).str.strip()))
-    report.extend({"patientId": patient, "studyId": "", "status": "unmatched_annotation"}
+    report.extend({"patientId": patient, "studyId": "", "status": "unmatched_annotation",
+                   "detail": ""}
                   for patient in unused)
-    return matched, pd.DataFrame(report, columns=["patientId", "studyId", "status"])
+    return matched, pd.DataFrame(report, columns=["patientId", "studyId", "status", "detail"])
 
 
 def resize_box(box, source_shape, target_shape):
