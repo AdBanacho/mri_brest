@@ -15,6 +15,7 @@ cat > "$TMP/bin/model" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$STUB_MODEL_ARGS"
 printf '%s\n' "$PWD" > "$STUB_MODEL_ARGS.cwd"
+printf '%s\n' "${PYTHONNOUSERSITE:-unset}" > "$STUB_MODEL_ARGS.user-site"
 STUB
 chmod +x "$TMP/bin/"*
 export PATH="$TMP/bin:$PATH"
@@ -92,6 +93,7 @@ cp "$controller" "$TMP/work/slurm_script"
 [[ "$(arg_value --imaging_patient_id_column "$STUB_MODEL_ARGS")" == 'Patient ID' ]]
 [[ "$(arg_value --clinical_features_file "$STUB_MODEL_ARGS")" == "$TMP/config with spaces/mriBreastDuke/features/Clinical_and_Other_Features.xlsx" ]]
 [[ "$(cat "$STUB_MODULES")" == 'load stub-module' && "$(cat "$STUB_MODEL_ARGS.cwd")" == "$ROOT" ]]
+[[ "$(cat "$STUB_MODEL_ARGS.user-site")" == 1 ]]
 assert_contains "$(cat "$STUB_MODEL_ARGS")" '--use_annotation_boxes'
 [[ "$(cat "$STUB_MODEL_ARGS")" != *'--include_sensitive'* ]]
 # Tampering fails before sourcing the modified configuration.
@@ -110,6 +112,29 @@ controller=$(awk '/\/run_experiment.slurm$/ {print; exit}' "$STUB_SBATCH_ARGS")
 SLURM_JOB_ID=12346 bash "$controller" --summarize --snapshot "$snapshot" --project-root "$ROOT" > "$TMP/summary-worker.out"
 [[ "$(arg_value --expected-folds "$STUB_MODEL_ARGS")" == 5 ]]
 [[ "$(arg_value --output-dir "$STUB_MODEL_ARGS")" == "$TMP/work/validation/summary" ]]
+[[ "$(cat "$STUB_MODEL_ARGS.user-site")" == 1 ]]
+
+# Environment selection uses the worker architecture, resolves relative config
+# paths before snapshotting, and applies to every stage.
+venv_root="$TMP/config with spaces/envs"
+mkdir -p "$venv_root/$(uname -m)/bin"
+touch "$venv_root/$(uname -m)/pyvenv.cfg"
+cp "$TMP/bin/model" "$venv_root/$(uname -m)/bin/python"
+cp "$CONFIG" "$TMP/config with spaces/venv.conf"
+printf '\nPYTHON_VENV_ROOT=envs\nPYTHON_BIN=/missing/interpreter\n' >> "$TMP/config with spaces/venv.conf"
+for env_stage in train validate summarize; do
+  bash "$ROOT/run_experiment.slurm" --"$env_stage" --config "$TMP/config with spaces/venv.conf" > "$TMP/venv-submit.out"
+  snapshot=$(arg_value --snapshot "$STUB_SBATCH_ARGS")
+  controller=$(awk '/\/run_experiment.slurm$/ {print; exit}' "$STUB_SBATCH_ARGS")
+  env_output=$(PYTHONNOUSERSITE=0 SLURM_JOB_ID=12345 SLURM_ARRAY_TASK_ID=0 bash "$controller" --"$env_stage" --snapshot "$snapshot" --project-root "$ROOT")
+  [[ "$(cat "$STUB_MODEL_ARGS.user-site")" == 1 ]]
+  assert_contains "$env_output" 'envs/'
+done
+rm "$venv_root/$(uname -m)/bin/python"
+expect_fail bash "$ROOT/run_experiment.slurm" --train --config "$TMP/config with spaces/venv.conf" --task-index 0
+assert_contains "$(cat "$TMP/failure.out")" 'Missing compute-node environment'
+output=$(bash "$ROOT/run_experiment.slurm" --train --config "$TMP/config with spaces/venv.conf" --task-index 0 --dry-run)
+assert_contains "$output" '/missing/interpreter'
 
 # Invalid grids/resources/booleans/indices fail before submission.
 expect_fail bash "$ROOT/run_experiment.slurm" --train --validate --dry-run
@@ -148,3 +173,4 @@ while IFS= read -r file; do
 done <<< "$(find "$ROOT" -name '*.sh' -not -path "$TMP/*")"
 while IFS= read -r file; do bash -n "$file"; done <<< "$(find "$ROOT" -name '*.slurm' -not -path "$TMP/*")"
 printf 'PASS: Slurm controller integration tests\n'
+

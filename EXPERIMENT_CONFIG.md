@@ -34,7 +34,7 @@ are explicit; the controller does not import or parse `constants.py`.
 | --- | --- |
 | `PATHS` | Workbooks, MRI files, prepared caches, checkpoints and output folders |
 | `JOB_TRAIN`, `JOB_VALIDATE`, `JOB_SUMMARIZE` | Account, partition, CPU/GPU count, memory, time and job name |
-| `MODULES`, `PYTHON_BIN` | Compute-node environment and model interpreter |
+| `MODULES`, `PYTHON_BIN`, `PYTHON_VENV_ROOT` | Compute modules, interpreter, and optional architecture-specific virtual environments |
 | `MAX_JOBS` | Limit the number of training configurations; 0 uses the full grid |
 | `MAX_CONCURRENT` | Maximum running tasks in each training/validation array |
 | `TRAIN`, `TRAIN_GRID` | Fixed training arguments and hyperparameter choices |
@@ -114,6 +114,70 @@ Cleanup, when enabled, occurs once before submission. It rejects broad directori
 input/cache paths, overlapping output roots, and Slurm log/snapshot directories.
 Do not enable cleanup while older jobs write to the same output directories.
 
+## Helios ARM / NumPy import errors
+
+GH200 nodes run aarch64 Python, while login-node pip installs can put x86_64
+binaries in the shared `~/.local/lib/python3.11/site-packages`. An error naming
+`_multiarray_umath.cpython-311-x86_64-linux-gnu.so` under aarch64 Python is this
+architecture mismatch. Training, validation and summary tasks now export
+`PYTHONNOUSERSITE=1` before/after module loading, so ordinary user-site packages
+cannot override the compute module's NumPy or PyTorch. Resubmit jobs to use the
+fix; previously frozen controllers keep their old behavior.
+
+The default `PYTHON_VENV_ROOT=''` uses `PYTHON_BIN` with module packages.
+If MONAI or other dependencies were only in `~/.local`, prepare a virtual
+environment **on the target compute architecture**, then set
+`PYTHON_VENV_ROOT=.venvs` in `experiment.conf`. Jobs select
+`<root>/$(uname -m)/bin/python` after loading modules. Relative roots are resolved
+against the original config directory and retained in frozen snapshots. A missing
+environment fails with its path; jobs never install packages concurrently.
+
+For the supplied GH200 configuration, request an interactive compute shell:
+
+```bash
+srun --partition=plgrid-gpu-gh200 --account=plgvirtudrel2026-gpu-gh200 \
+  --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=8G --time=00:30:00 \
+  --pty /bin/bash -l
+```
+
+Inside that shell, use the same modules configured in `experiment.conf`:
+
+```bash
+cd /net/home/plgrid/plgabanacho/mri_brest
+export PYTHONNOUSERSITE=1
+module purge
+module load ML-bundle
+export PYTHONNOUSERSITE=1
+VENV_DIR="$PWD/.venvs/$(uname -m)"
+python3 -c 'import numpy, torch; print(numpy.__file__); print(torch.__file__)'
+python3 -m venv --system-site-packages "$VENV_DIR"
+# Preserve the cluster's NumPy and CUDA-enabled PyTorch while adding dependencies.
+python3 -m pip show numpy torch |
+  awk '$1 == "Name:" {name=$2} $1 == "Version:" {print name "==" $2}' \
+  > "$VENV_DIR/module-constraints.txt"
+PIP_USER=false "$VENV_DIR/bin/python" -m pip install \
+  --constraint "$VENV_DIR/module-constraints.txt" \
+  monai==1.5.1 lightning==2.5.6 pytorch_lightning torchmetrics==1.8.2 \
+  requests pandas scikit-learn xgboost nibabel openpyxl tensorboard einops matplotlib
+"$VENV_DIR/bin/python" -m pip check
+"$VENV_DIR/bin/python" -m mriBreastDuke.configurable_imaging_features_fusion_workflow --help
+"$VENV_DIR/bin/python" -m mriBreastDuke.validate_configurable_imaging_features_fusion --help
+"$VENV_DIR/bin/python" -m mriBreastDuke.summarize_configurable_imaging_features_fusion --help
+```
+
+If the initial NumPy/PyTorch check fails, fix the selected cluster module first.
+If pip reports incompatible versions, choose dependencies compatible with the
+module rather than removing the constraints. Do not reuse a virtual environment
+across Python/module versions. Keep `PYTHONPATH` free of manually added
+`~/.local` paths; it remains available because cluster modules may need it.
+
+Set `PYTHON_VENV_ROOT=.venvs`, exit the interactive shell, and submit normally:
+
+```bash
+bash run_experiment.sh --train --dry-run
+bash run_experiment.sh --train
+```
+
 ## Other entry points
 
 `ConfigurableImagingFeaturesFusionBinary.sh`,
@@ -136,3 +200,4 @@ bash tests/slurm_controller_test.slurm
 
 Tests stub Slurm and the model executable; actual GPU training requires Helios and
 the configured datasets/environment.
+
