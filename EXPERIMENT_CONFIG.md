@@ -35,6 +35,7 @@ are explicit; the controller does not import or parse `constants.py`.
 | `PATHS` | Workbooks, MRI files, prepared caches, checkpoints and output folders |
 | `JOB_TRAIN`, `JOB_VALIDATE`, `JOB_SUMMARIZE` | Account, partition, CPU/GPU count, memory, time and job name |
 | `MODULES`, `PYTHON_BIN`, `PYTHON_VENV_ROOT` | Compute modules, interpreter, and optional architecture-specific virtual environments |
+| `AUTO_INSTALL_PYTHON_PACKAGES`, `PYTHON_PACKAGES` | Automatic compute-node dependency setup and editable pip package list |
 | `MAX_JOBS` | Limit the number of training configurations; 0 uses the full grid |
 | `MAX_CONCURRENT` | Maximum running tasks in each training/validation array |
 | `TRAIN`, `TRAIN_GRID` | Fixed training arguments and hyperparameter choices |
@@ -114,69 +115,68 @@ Cleanup, when enabled, occurs once before submission. It rejects broad directori
 input/cache paths, overlapping output roots, and Slurm log/snapshot directories.
 Do not enable cleanup while older jobs write to the same output directories.
 
-## Helios ARM / NumPy import errors
+## Compute-node Python dependencies
 
-GH200 nodes run aarch64 Python, while login-node pip installs can put x86_64
-binaries in the shared `~/.local/lib/python3.11/site-packages`. An error naming
-`_multiarray_umath.cpython-311-x86_64-linux-gnu.so` under aarch64 Python is this
-architecture mismatch. Training, validation and summary tasks now export
-`PYTHONNOUSERSITE=1` before/after module loading, so ordinary user-site packages
-cannot override the compute module's NumPy or PyTorch. Resubmit jobs to use the
-fix; previously frozen controllers keep their old behavior.
-
-The default `PYTHON_VENV_ROOT=''` uses `PYTHON_BIN` with module packages.
-If MONAI or other dependencies were only in `~/.local`, prepare a virtual
-environment **on the target compute architecture**, then set
-`PYTHON_VENV_ROOT=.venvs` in `experiment.conf`. Jobs select
-`<root>/$(uname -m)/bin/python` after loading modules. Relative roots are resolved
-against the original config directory and retained in frozen snapshots. A missing
-environment fails with its path; jobs never install packages concurrently.
-
-For the supplied GH200 configuration, request an interactive compute shell:
+The shipped configuration automatically prepares the required Python packages
+before running training, validation or summary tasks:
 
 ```bash
-srun --partition=plgrid-gpu-gh200 --account=plgvirtudrel2026-gpu-gh200 \
-  --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=8G --time=00:30:00 \
-  --pty /bin/bash -l
-```
-
-Inside that shell, use the same modules configured in `experiment.conf`:
-
-```bash
-cd /net/home/plgrid/plgabanacho/mri_brest
-export PYTHONNOUSERSITE=1
-module purge
-module load ML-bundle
-export PYTHONNOUSERSITE=1
-VENV_DIR="$PWD/.venvs/$(uname -m)"
-python3 -c 'import numpy, torch; print(numpy.__file__); print(torch.__file__)'
-python3 -m venv --system-site-packages "$VENV_DIR"
-# Preserve the cluster's NumPy and CUDA-enabled PyTorch while adding dependencies.
-python3 -m pip show numpy torch |
-  awk '$1 == "Name:" {name=$2} $1 == "Version:" {print name "==" $2}' \
-  > "$VENV_DIR/module-constraints.txt"
-PIP_USER=false "$VENV_DIR/bin/python" -m pip install \
-  --constraint "$VENV_DIR/module-constraints.txt" \
-  monai==1.5.1 lightning==2.5.6 pytorch_lightning torchmetrics==1.8.2 \
+PYTHON_VENV_ROOT=.venvs
+AUTO_INSTALL_PYTHON_PACKAGES=true
+PYTHON_PACKAGES=(
+  monai==1.5.1 pytorch_lightning==2.5.6 lightning==2.5.6 torchmetrics==1.8.2
   requests pandas scikit-learn xgboost nibabel openpyxl tensorboard einops matplotlib
-"$VENV_DIR/bin/python" -m pip check
-"$VENV_DIR/bin/python" -m mriBreastDuke.configurable_imaging_features_fusion_workflow --help
-"$VENV_DIR/bin/python" -m mriBreastDuke.validate_configurable_imaging_features_fusion --help
-"$VENV_DIR/bin/python" -m mriBreastDuke.summarize_configurable_imaging_features_fusion --help
+  scipy joblib filelock tqdm pillow
+)
 ```
 
-If the initial NumPy/PyTorch check fails, fix the selected cluster module first.
-If pip reports incompatible versions, choose dependencies compatible with the
-module rather than removing the constraints. Do not reuse a virtual environment
-across Python/module versions. Keep `PYTHONPATH` free of manually added
-`~/.local` paths; it remains available because cluster modules may need it.
+This combines the package lists from `denseBinary.slurm` and
+`mriBreastDuke/run_xgboost_fusion.slurm`, including explicit dependencies imported
+by the current pipeline. Add or pin packages in `PYTHON_PACKAGES`; pip resolves
+their transitive dependencies. NumPy and CUDA-enabled PyTorch are supplied by
+`MODULES`, checked before setup, and constrained to their module versions during
+installation. An incompatible requested package fails rather than replacing
+those versions.
 
-Set `PYTHON_VENV_ROOT=.venvs`, exit the interactive shell, and submit normally:
+GH200 nodes use aarch64 Python. Shared `~/.local` packages installed on an x86
+login node can contain incompatible NumPy binaries. Every compute task keeps
+`PYTHONNOUSERSITE=1` before and after module loading. Keep `PYTHONPATH` free of
+manually added `~/.local` paths; cluster modules may need their own paths.
+
+The controller creates a virtual environment with `--system-site-packages`
+**inside the compute job**. It uses
+`<PYTHON_VENV_ROOT>/<compute architecture>/runtime-<hash>/bin/python`.
+The hash includes the base Python executable/version, module NumPy/PyTorch
+metadata, configured modules, package list, and bootstrap revision. This keeps
+different runtimes and package sets separate. Relative roots resolve against the
+original configuration directory and are saved as absolute paths in snapshots.
+
+The first task holds a `flock` lock while creating the environment and installing
+packages; other tasks wait, then reuse it. Setup runs `pip check` and invokes all
+three actual pipeline modules with `--help` to catch import failures before
+experiments start. A ready marker is written only after these checks pass.
+Failures stop the task; later tasks can retry incomplete setup. Completed
+environments are reused without pip installs. First-use setup needs package-index
+network access, writable storage, `venv`, `pip`, and the Linux `flock` utility.
+
+With the updated configuration, submit normally from the login node:
 
 ```bash
 bash run_experiment.sh --train --dry-run
 bash run_experiment.sh --train
 ```
+
+Dry runs show the package list and environment root without loading modules,
+calling Python, installing packages, or creating environments. Training,
+validation, and summary use the same setup. Resubmit failed jobs after updating:
+already queued jobs retain their frozen controller and package configuration.
+
+To use an environment you prepare manually on the target compute architecture,
+set `AUTO_INSTALL_PYTHON_PACKAGES=false`. With a nonempty root, jobs then use
+`<root>/$(uname -m)/bin/python` and fail if it is missing. With
+`PYTHON_VENV_ROOT=''`, jobs use `PYTHON_BIN` and only the module's packages.
+Existing custom configurations without the new install flag retain this manual
+behavior; copy the new settings above to enable automatic setup.
 
 ## Other entry points
 

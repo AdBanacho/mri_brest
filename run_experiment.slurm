@@ -51,6 +51,15 @@ config_dir=$(dirname -- "$config")
 source "$config"
 # Optional environments are selected on the compute node, never the login node.
 PYTHON_VENV_ROOT=${PYTHON_VENV_ROOT:-}
+AUTO_INSTALL_PYTHON_PACKAGES=${AUTO_INSTALL_PYTHON_PACKAGES:-false}
+if ! declare -p PYTHON_PACKAGES >/dev/null 2>&1; then
+  PYTHON_PACKAGES=()
+fi
+[[ "$AUTO_INSTALL_PYTHON_PACKAGES" == true || "$AUTO_INSTALL_PYTHON_PACKAGES" == false ]] || fail 'AUTO_INSTALL_PYTHON_PACKAGES must be true or false'
+if [[ "$AUTO_INSTALL_PYTHON_PACKAGES" == true ]]; then
+  [[ -n "$PYTHON_VENV_ROOT" ]] || fail 'Automatic package installation requires PYTHON_VENV_ROOT'
+  (("${#PYTHON_PACKAGES[@]}" > 0)) || fail 'Automatic package installation requires PYTHON_PACKAGES'
+fi
 if [[ -n "$PYTHON_VENV_ROOT" ]]; then
   [[ "$PYTHON_VENV_ROOT" == /* ]] || PYTHON_VENV_ROOT=$config_dir/$PYTHON_VENV_ROOT
   PYTHON_VENV_ROOT=$(realpath -m -- "$PYTHON_VENV_ROOT")
@@ -138,7 +147,7 @@ case "$stage" in train) count=$train_count;; validate) count=$((train_count * va
 
 # Serialize resolved shell values, not a generated TOML/JSON configuration.
 write_snapshot() {
-  declare -p PYTHON_BIN PYTHON_VENV_ROOT MODULES MAX_JOBS MAX_CONCURRENT CLEAN_BEFORE_TRAIN CLEAN_BEFORE_VALIDATE \
+  declare -p PYTHON_BIN PYTHON_VENV_ROOT AUTO_INSTALL_PYTHON_PACKAGES PYTHON_PACKAGES MODULES MAX_JOBS MAX_CONCURRENT CLEAN_BEFORE_TRAIN CLEAN_BEFORE_VALIDATE \
     PATHS JOB_TRAIN JOB_VALIDATE JOB_SUMMARIZE EXTRA_SBATCH_TRAIN EXTRA_SBATCH_VALIDATE \
     EXTRA_SBATCH_SUMMARIZE TRAIN TRAIN_GRID VALIDATE VALIDATE_GRID SUMMARIZE
 }
@@ -204,6 +213,44 @@ build_command() {
 }
 print_command() { printf '%q ' "$@"; printf '\n'; }
 
+# Bootstrap once per runtime/package set on the actual compute architecture.
+# flock serializes first-use array tasks; completed environments are immutable.
+prepare_python_environment() {
+  local base_python constraints metadata runtime signature env_parent env_dir
+  base_python=$(command -v -- "$PYTHON_BIN") || fail "Python is unavailable: $PYTHON_BIN"
+  "$base_python" -c 'import numpy, torch' || fail 'Compute module NumPy/PyTorch cannot import with user-site disabled'
+  metadata=$("$base_python" -m pip show numpy torch) || fail 'Compute module must provide NumPy, PyTorch and pip'
+  constraints=$(printf '%s\n' "$metadata" | awk '$1 == "Name:" {name=$2} $1 == "Version:" {print name "==" $2}')
+  [[ "$constraints" == *numpy==* && "$constraints" == *torch==* ]] || fail 'Could not constrain module NumPy/PyTorch'
+  runtime=$("$base_python" --version 2>&1)
+  signature=$({
+    printf '%s\0' bootstrap-v1 "$(readlink -f -- "$base_python")" "$runtime" "$metadata"
+    printf '%s\0' "${MODULES[@]}" "${PYTHON_PACKAGES[@]}"
+  } | sha256sum); signature=${signature%% *}
+  env_parent=$PYTHON_VENV_ROOT/$(uname -m)
+  env_dir=$env_parent/runtime-$signature
+  command -v flock >/dev/null || fail 'Automatic environment setup requires flock'
+  mkdir -p -- "$env_parent"
+  (
+    flock -x 9
+    if [[ ! -f "$env_dir/.ready" ]]; then
+      printf 'Preparing Python dependencies: %s\n' "$env_dir"
+      "$base_python" -m venv --system-site-packages --clear "$env_dir"
+      printf '%s\n' "$constraints" > "$env_dir/module-constraints.txt"
+      PIP_CONFIG_FILE=/dev/null PIP_USER=false "$env_dir/bin/python" -m pip install \
+        --constraint "$env_dir/module-constraints.txt" "${PYTHON_PACKAGES[@]}" ||
+        fail 'Dependency installation failed; module NumPy/PyTorch constraints were preserved'
+      "$env_dir/bin/python" -m pip check
+      # Import the actual entry points without running experiments or reading data.
+      for entrypoint in configurable_imaging_features_fusion_workflow validate_configurable_imaging_features_fusion summarize_configurable_imaging_features_fusion; do
+        "$env_dir/bin/python" -m "mriBreastDuke.$entrypoint" --help >/dev/null
+      done
+      touch "$env_dir/.ready"
+    fi
+  ) 9>"$env_parent/runtime-$signature.lock"
+  SELECTED_PYTHON=$env_dir/bin/python
+}
+
 if [[ -n "$snapshot" && -n "${SLURM_JOB_ID:-}" && -z "$task_index" ]]; then
   task_index=${SLURM_ARRAY_TASK_ID:-0}
 fi
@@ -218,7 +265,10 @@ if [[ -n "$task_index" ]]; then
     export PYTHONNOUSERSITE=1
     for module_name in "${MODULES[@]}"; do module load "$module_name"; done
     export PYTHONNOUSERSITE=1
-    if [[ -n "$PYTHON_VENV_ROOT" ]]; then
+    if [[ "$AUTO_INSTALL_PYTHON_PACKAGES" == true ]]; then
+      prepare_python_environment
+      COMMAND[0]=$SELECTED_PYTHON
+    elif [[ -n "$PYTHON_VENV_ROOT" ]]; then
       venv=$PYTHON_VENV_ROOT/$(uname -m)
       [[ -f "$venv/pyvenv.cfg" && -x "$venv/bin/python" ]] || fail "Missing compute-node environment: $venv (see EXPERIMENT_CONFIG.md)"
       COMMAND[0]=$venv/bin/python
@@ -282,6 +332,10 @@ for target in "${cleanup_targets[@]}"; do
 done
 printf '%s: %s job(s), max concurrent %s\n' "$stage" "$count" "$MAX_CONCURRENT"
 if [[ "$dry_run" == true ]]; then
+  if [[ "$AUTO_INSTALL_PYTHON_PACKAGES" == true ]]; then
+    printf 'Compute-node environment root: %s\nPackages: ' "$PYTHON_VENV_ROOT"
+    print_command "${PYTHON_PACKAGES[@]}"
+  fi
   for target in "${cleanup_targets[@]}"; do printf 'Would remove: %s\n' "$target"; done
   print_command "${SBATCH[@]}" '<frozen-controller.slurm>' --"$stage" --snapshot '<resolved-experiment.conf>' --project-root "$PROJECT_ROOT"
   printf 'Example task 0: '; print_command "${COMMAND[@]}"

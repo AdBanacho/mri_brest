@@ -25,6 +25,8 @@ CONFIG="$TMP/config with spaces/experiment.conf"
 cp "$ROOT/experiment.conf" "$CONFIG"
 cat >> "$CONFIG" <<OVERRIDES
 MAX_JOBS=2
+AUTO_INSTALL_PYTHON_PACKAGES=false
+PYTHON_VENV_ROOT=''
 MODULES=(stub-module)
 PYTHON_BIN='$TMP/bin/model'
 PATHS[slurm_logs]='$TMP/work/logs'
@@ -135,6 +137,73 @@ expect_fail bash "$ROOT/run_experiment.slurm" --train --config "$TMP/config with
 assert_contains "$(cat "$TMP/failure.out")" 'Missing compute-node environment'
 output=$(bash "$ROOT/run_experiment.slurm" --train --config "$TMP/config with spaces/venv.conf" --task-index 0 --dry-run)
 assert_contains "$output" '/missing/interpreter'
+
+# Automatic setup installs on the worker, preserves native module constraints,
+# verifies entry points, and is shared safely by concurrent array tasks.
+export STUB_BOOTSTRAP_LOG="$TMP/bootstrap.log" STUB_BASE_MODEL="$TMP/bin/model"
+cat > "$TMP/bin/bootstrap-python" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${PYTHONNOUSERSITE:-}" == 1 ]]
+case "$*" in
+  --version) printf 'Python 3.11.5\n';;
+  '-c import numpy, torch') ;;
+  '-m pip show numpy torch')
+    printf 'Name: numpy\nVersion: 1.26.4\nName: torch\nVersion: 2.6.0\n';;
+  '-m venv '*)
+    env_dir=${!#}
+    mkdir -p "$env_dir/bin"
+    touch "$env_dir/pyvenv.cfg"
+    cp "$0" "$env_dir/bin/python";;
+  '-m pip install '*)
+    [[ "${PIP_USER:-}" == false && "${PIP_CONFIG_FILE:-}" == /dev/null ]]
+    [[ "$(cat "$5")" == $'numpy==1.26.4\ntorch==2.6.0' ]]
+    printf 'install %s\n' "$*" >> "$STUB_BOOTSTRAP_LOG"
+    [[ "${STUB_INSTALL_FAIL:-0}" == 0 ]];;
+  '-m pip check') printf 'check\n' >> "$STUB_BOOTSTRAP_LOG";;
+  *' --help')
+    printf 'import %s\n' "$2" >> "$STUB_BOOTSTRAP_LOG"
+    [[ "${STUB_IMPORT_FAIL:-0}" == 0 ]];;
+  *) exec "$STUB_BASE_MODEL" "$@";;
+esac
+STUB
+chmod +x "$TMP/bin/bootstrap-python"
+cp "$CONFIG" "$TMP/auto.conf"
+cat >> "$TMP/auto.conf" <<OVERRIDES
+AUTO_INSTALL_PYTHON_PACKAGES=true
+PYTHON_VENV_ROOT='$TMP/managed-envs'
+PYTHON_BIN='$TMP/bin/bootstrap-python'
+OVERRIDES
+auto_dry=$(bash "$ROOT/run_experiment.slurm" --train --config "$TMP/auto.conf" --dry-run)
+assert_contains "$auto_dry" monai==1.5.1
+[[ ! -e "$TMP/managed-envs" && ! -e "$STUB_BOOTSTRAP_LOG" ]]
+bash "$ROOT/run_experiment.slurm" --train --config "$TMP/auto.conf" --task-index 0 > "$TMP/auto-worker-1.out" &
+first_worker=$!
+bash "$ROOT/run_experiment.slurm" --validate --config "$TMP/auto.conf" --task-index 0 > "$TMP/auto-worker-2.out" &
+second_worker=$!
+wait "$first_worker"
+wait "$second_worker"
+[[ $(rg -c '^install ' "$STUB_BOOTSTRAP_LOG") == 1 ]]
+[[ $(rg -c '^import ' "$STUB_BOOTSTRAP_LOG") == 3 ]]
+assert_contains "$(cat "$STUB_BOOTSTRAP_LOG")" 'monai==1.5.1'
+assert_contains "$(cat "$STUB_BOOTSTRAP_LOG")" 'xgboost'
+assert_contains "$(cat "$STUB_BOOTSTRAP_LOG")" 'filelock'
+bash "$ROOT/run_experiment.slurm" --summarize --config "$TMP/auto.conf" --task-index 0 > "$TMP/auto-summary.out"
+[[ $(rg -c '^install ' "$STUB_BOOTSTRAP_LOG") == 1 ]]
+
+# Frozen package lists survive config edits; changed requirements get a new env.
+bash "$ROOT/run_experiment.slurm" --train --config "$TMP/auto.conf" > "$TMP/auto-submit.out"
+snapshot=$(arg_value --snapshot "$STUB_SBATCH_ARGS")
+controller=$(awk '/\/run_experiment.slurm$/ {print; exit}' "$STUB_SBATCH_ARGS")
+printf '\nPYTHON_PACKAGES+=(extra-package==2)\n' >> "$TMP/auto.conf"
+SLURM_JOB_ID=12345 bash "$controller" --train --snapshot "$snapshot" --project-root "$ROOT" > "$TMP/auto-frozen.out"
+[[ $(rg -c '^install ' "$STUB_BOOTSTRAP_LOG") == 1 ]]
+expect_fail env STUB_INSTALL_FAIL=1 bash "$ROOT/run_experiment.slurm" --train --config "$TMP/auto.conf" --task-index 0
+[[ $(find "$TMP/managed-envs" -name .ready | wc -l) == 1 ]]
+expect_fail env STUB_IMPORT_FAIL=1 bash "$ROOT/run_experiment.slurm" --train --config "$TMP/auto.conf" --task-index 0
+[[ $(find "$TMP/managed-envs" -name .ready | wc -l) == 1 ]]
+bash "$ROOT/run_experiment.slurm" --train --config "$TMP/auto.conf" --task-index 0 > "$TMP/auto-retry.out"
+[[ $(find "$TMP/managed-envs" -name .ready | wc -l) == 2 ]]
 
 # Invalid grids/resources/booleans/indices fail before submission.
 expect_fail bash "$ROOT/run_experiment.slurm" --train --validate --dry-run
