@@ -49,6 +49,12 @@ fi
 config_dir=$(dirname -- "$config")
 # Configurations are trusted shell code, not executable launchers.
 source "$config"
+# Optional environments are selected on the compute node, never the login node.
+PYTHON_VENV_ROOT=${PYTHON_VENV_ROOT:-}
+if [[ -n "$PYTHON_VENV_ROOT" ]]; then
+  [[ "$PYTHON_VENV_ROOT" == /* ]] || PYTHON_VENV_ROOT=$config_dir/$PYTHON_VENV_ROOT
+  PYTHON_VENV_ROOT=$(realpath -m -- "$PYTHON_VENV_ROOT")
+fi
 
 TRAIN_KEYS='mri_model subtraction_mode feature_groups feature_model feature_selector imaging_patient_id_column allow_missing_imaging_features include_sensitive use_annotation_boxes epoch num_folds threshold_calibration_folds batch_size num_workers positive_boost sensitivity_lambda lr xgb_n_estimators xgb_max_depth xgb_learning_rate xgb_subsample xgb_colsample_bytree xgb_n_jobs lasso_cv_folds lasso_cs lasso_max_iter lasso_tolerance lasso_min_features lasso_n_jobs lasso_plot_top_n mlp_hidden_layers mlp_alpha mlp_learning_rate mlp_max_iter xgb_extra_json mlp_extra_json mri_extra_json trainer_extra_json seed target_size'
 VALIDATE_KEYS='num_workers fusion_alpha'
@@ -132,7 +138,7 @@ case "$stage" in train) count=$train_count;; validate) count=$((train_count * va
 
 # Serialize resolved shell values, not a generated TOML/JSON configuration.
 write_snapshot() {
-  declare -p PYTHON_BIN MODULES MAX_JOBS MAX_CONCURRENT CLEAN_BEFORE_TRAIN CLEAN_BEFORE_VALIDATE \
+  declare -p PYTHON_BIN PYTHON_VENV_ROOT MODULES MAX_JOBS MAX_CONCURRENT CLEAN_BEFORE_TRAIN CLEAN_BEFORE_VALIDATE \
     PATHS JOB_TRAIN JOB_VALIDATE JOB_SUMMARIZE EXTRA_SBATCH_TRAIN EXTRA_SBATCH_VALIDATE \
     EXTRA_SBATCH_SUMMARIZE TRAIN TRAIN_GRID VALIDATE VALIDATE_GRID SUMMARIZE
 }
@@ -205,12 +211,22 @@ if [[ -n "$task_index" ]]; then
   [[ "$task_index" =~ ^(0|[1-9][0-9]*)$ ]] || fail 'Invalid task index'
   ((task_index < count)) || fail "Task index outside 0-$((count - 1))"
   build_command "$task_index"
-  print_command "${COMMAND[@]}"
   if [[ "$dry_run" != true ]]; then
     cd -- "$PROJECT_ROOT"
+    # ~/.local/lib/pythonX.Y is shared by x86 login and ARM GH200 nodes.
+    # Disable it before module loading and again afterwards for every stage.
+    export PYTHONNOUSERSITE=1
     for module_name in "${MODULES[@]}"; do module load "$module_name"; done
+    export PYTHONNOUSERSITE=1
+    if [[ -n "$PYTHON_VENV_ROOT" ]]; then
+      venv=$PYTHON_VENV_ROOT/$(uname -m)
+      [[ -f "$venv/pyvenv.cfg" && -x "$venv/bin/python" ]] || fail "Missing compute-node environment: $venv (see EXPERIMENT_CONFIG.md)"
+      COMMAND[0]=$venv/bin/python
+    fi
+    print_command "${COMMAND[@]}"
     exec "${COMMAND[@]}"
   fi
+  print_command "${COMMAND[@]}"
   exit 0
 fi
 [[ -z "$snapshot" ]] || fail 'A snapshot is only used by a Slurm task'
@@ -283,3 +299,4 @@ chmod a-w -- "$snapshot_path" "$run_dir/run_experiment.slurm"
 for target in "${cleanup_targets[@]}"; do printf 'Removing previous output: %s\n' "$target"; rm -rf -- "$target"; done
 job_id=$("${SBATCH[@]}" "$run_dir/run_experiment.slurm" --"$stage" --snapshot "$snapshot_path" --project-root "$PROJECT_ROOT")
 printf 'Submitted %s: Slurm ID %s\nConfiguration: %s\n' "$stage" "$job_id" "$snapshot_path"
+
